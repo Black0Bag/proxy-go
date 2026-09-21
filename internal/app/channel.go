@@ -91,8 +91,8 @@ type stickyEntry struct {
 // stickyTTL 会话粘性时长。
 const stickyTTL = 60 * time.Minute
 
-// errNoChannel 组内无可用渠道。
-var errNoChannel = errors.New("no available channel in group")
+// ErrNoChannel 组内无可用渠道。
+var ErrNoChannel = errors.New("no available channel in group")
 
 // Balancer 渠道组轮询器（并发安全）。
 type Balancer struct {
@@ -162,7 +162,7 @@ func (b *Balancer) Pick(groupName, sessionKey string) (*Channel, error) {
 	defer b.mu.Unlock()
 	g, ok := b.groups[groupName]
 	if !ok || len(g.Members) == 0 {
-		return nil, fmt.Errorf("%w %q", errNoChannel, groupName)
+		return nil, fmt.Errorf("%w %q", ErrNoChannel, groupName)
 	}
 	now := time.Now()
 	for k, v := range b.sticky {
@@ -190,7 +190,7 @@ func (b *Balancer) Pick(groupName, sessionKey string) (*Channel, error) {
 		picked = b.pickRoundRobin(g)
 	}
 	if picked == nil {
-		return nil, fmt.Errorf("%w %q", errNoChannel, groupName)
+		return nil, fmt.Errorf("%w %q", ErrNoChannel, groupName)
 	}
 	if sessionKey != "" {
 		b.sticky[sessionKey] = stickyEntry{channelID: picked.ID, until: now.Add(stickyTTL)}

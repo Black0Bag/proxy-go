@@ -36,8 +36,8 @@ func TestBreakerAllOpen(t *testing.T) {
 			b.ReportResult(id, 5, false)
 		}
 	}
-	if _, err := b.Pick("auto", ""); !errors.Is(err, errNoChannel) {
-		t.Fatalf("all channels open should yield errNoChannel, got %v", err)
+	if _, err := b.Pick("auto", ""); !errors.Is(err, ErrNoChannel) {
+		t.Fatalf("all channels open should yield ErrNoChannel, got %v", err)
 	}
 }
 

@@ -109,12 +109,12 @@ func TestStickySession(t *testing.T) {
 
 func TestPickErrorsOnMissingOrEmpty(t *testing.T) {
 	b := mkBalancer(t)
-	if _, err := b.Pick("nope", ""); !errors.Is(err, errNoChannel) {
-		t.Fatalf("expect errNoChannel, got %v", err)
+	if _, err := b.Pick("nope", ""); !errors.Is(err, ErrNoChannel) {
+		t.Fatalf("expect ErrNoChannel, got %v", err)
 	}
 	b.UpsertGroup(ModelGroup{Name: "empty", Members: []string{}})
-	if _, err := b.Pick("empty", ""); !errors.Is(err, errNoChannel) {
-		t.Fatalf("expect errNoChannel for empty group, got %v", err)
+	if _, err := b.Pick("empty", ""); !errors.Is(err, ErrNoChannel) {
+		t.Fatalf("expect ErrNoChannel for empty group, got %v", err)
 	}
 }
 
