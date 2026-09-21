@@ -5,14 +5,18 @@ import (
 	"cline-go-proxy/internal/kit"
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -294,9 +298,16 @@ func StartProxy(host string, port int) error {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	proxyListenAddress = addr
 	server := &http.Server{
-		Addr:    addr,
-		Handler: requestLogMiddleware(mux),
+		Addr:              addr,
+		Handler:           requestLogMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
+
+	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.ListenAndServe() }()
 
 	fmt.Println("")
 	fmt.Println(strings.Repeat("=", 58))
@@ -307,9 +318,33 @@ func StartProxy(host string, port int) error {
 	fmt.Println("  API Key: any value")
 	fmt.Printf("  Model:   %s (auto-detected)\n", getDefaultModel())
 	fmt.Printf("  Accounts: %d total, %d active\n", len(loadPool().Accounts), activeCount)
+	adminTokState := adminTokenValue()
+	adminTok, fresh := adminTokState.token, adminTokState.fresh
+	if fresh {
+		fmt.Printf("  Admin Token: %s  (新生成，已存 %s)\n", adminTok, adminTokenFile)
+	} else if os.Getenv("CLINE_PROXY_ADMIN_TOKEN") != "" {
+		fmt.Println("  Admin Token: 来自环境变量 CLINE_PROXY_ADMIN_TOKEN")
+	} else {
+		fmt.Printf("  Admin Token: %s  (来自 %s)\n", adminTok, adminTokenFile)
+	}
 	fmt.Println(strings.Repeat("=", 58))
 
-	return server.ListenAndServe()
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-shutdownCtx.Done():
+		fmt.Println("\n  收到退出信号，正在优雅关闭（最长 30s）...")
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := server.Shutdown(timeoutCtx); err != nil {
+			return fmt.Errorf("graceful shutdown: %w", err)
+		}
+		fmt.Println("  已安全退出")
+		return nil
+	}
 }
 
 // initLogFile 将日志同时输出到控制台与 cline-proxy.log（追加模式），

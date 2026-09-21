@@ -19,7 +19,13 @@ Cline-proxy：Cline API 反向代理服务（Go 单二进制），支持多账�
 - PR#4 的过时开发快照（+858 行，已被 main 后续演进覆盖）
 - 不重构、不改协议逻辑、不加新依赖
 
-## 完成定义
-- 4 个 bug 全部修复且可追溯（commit 关联 PR 编号）
-- `go build ./...`、`go vet ./...`、`go test ./...` 全部通过
-- statusWriter.Flush 有单元测试覆盖（项目首个测试文件）
+## Skill 深度论证后的 M0-M4 修正案（2026-09-22）
+依据：go-backend skill（生产级 server 骨架/并发/错误处理/测试）、use-modern-go CLI（Go 1.25 48 条指南）、agent-governance skill（M4 治理模式）、代码实锤（proxy.go:296 零超时配置）。
+
+- M0 增补：http.Server 必须补 ReadHeaderTimeout/IdleTimeout + signal.NotifyContext 优雅关闭（现状 proxy.go:296 零超时字段，Slowloris 暴露面实锤）；admin 鉴权 = agent-governance 的 Strict 级。
+- M1 修正：路由**不引入 chi**——用 Go 1.22+ method-aware ServeMux + r.PathValue（use-modern-go: http_servemux_patterns），与现有 mux 风格零迁移成本。
+- M1 并发基线：熔断器 = mutex+map（skill: 细粒度互斥用 mutex）；探活 fan-out = errgroup SetLimit（Go 1.22+ 无 loopvar 坑）；错误分派 = sentinel + errors.Is（ErrRateLimited{RetryAfter}/ErrKeyInvalid）。
+- M3 修正：签到/同步调度器每个 goroutine 绑定 ctx 停止条件（skill: goroutine 无退出路径即泄漏）；多结果聚合用 errors.Join。
+- M4 修正：巡检 agent 采用 agent-governance 模式——policy as YAML、allowlist admin API、写操作 require_human_approval、append-only 审计 JSONL、fail closed、Open/Standard/Strict/Locked 分级放权（从 Standard 起步）。
+- 代码风格基线：新代码用 wg.Go(1.25)/atomic.Bool/OnceFunc/slices·maps 包/min-max/any/json omitzero；存量不整片重写（skill: Apply to generated changes）。
+- 测试基线：httptest.NewServer 假上游测熔断/轮询全链路（不 mock http.Client）；go test -race 必须进 CI。
