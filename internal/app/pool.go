@@ -51,9 +51,49 @@ func loadPool() *AccountPool {
 	if p.Keys == nil {
 		p.Keys = []string{}
 	}
+
+	// 敏感字段透明解密：RefreshToken / Keys 落盘为 enc:v1: 密文，内存保持明文。
+	// 单字段解密失败仅置空该字段并告警，不让整个池加载失败、不 panic。
+	needsMigration := false
+	for _, a := range p.Accounts {
+		if a == nil || a.RefreshToken == "" {
+			continue
+		}
+		plain, err := openSecret(a.RefreshToken)
+		if err != nil {
+			log.Printf("pool: account %s refresh token decrypt failed, field cleared: %v", a.AccountID, err)
+			a.RefreshToken = ""
+			continue
+		}
+		if !isEncryptedSecret(a.RefreshToken) {
+			needsMigration = true // 旧版明文凭据
+		}
+		a.RefreshToken = plain
+	}
+	for i, k := range p.Keys {
+		if k == "" {
+			continue
+		}
+		plain, err := openSecret(k)
+		if err != nil {
+			log.Printf("pool: key #%d decrypt failed, field cleared: %v", i+1, err)
+			p.Keys[i] = ""
+			continue
+		}
+		if !isEncryptedSecret(k) {
+			needsMigration = true
+		}
+		p.Keys[i] = plain
+	}
+
 	pool = &p
 	if pool.DefaultModel != "" {
 		defaultModel = pool.DefaultModel
+	}
+	// 检测到旧版明文凭据：立即回写一次，完成明文→密文迁移。
+	if needsMigration {
+		log.Printf("pool: plaintext credentials detected, migrating to encrypted storage")
+		savePoolLocked()
 	}
 	return pool
 }
@@ -82,14 +122,38 @@ func savePool() {
 }
 
 // savePoolLocked 持久化账号池；调用方必须已经持有 poolMu。
+// 落盘前对敏感字段（RefreshToken / Keys）做 sealSecret 加密，
+// 通过深拷贝生成快照，不改动内存中的明文运行时状态。
 func savePoolLocked() {
 	poolSaveMu.Lock()
 	defer poolSaveMu.Unlock()
 
-	data, _ := json.MarshalIndent(pool, "", "  ")
+	data, _ := json.MarshalIndent(snapshotPoolForSave(), "", "  ")
 	if err := os.WriteFile(poolPath, data, 0600); err != nil {
 		log.Printf("Failed to save accounts: %v", err)
 	}
+}
+
+// snapshotPoolForSave 生成敏感字段已加密的池快照，仅供落盘使用。
+func snapshotPoolForSave() *AccountPool {
+	snap := &AccountPool{
+		Accounts:     make([]*Account, len(pool.Accounts)),
+		CurrentIdx:   pool.CurrentIdx,
+		Keys:         make([]string, len(pool.Keys)),
+		DefaultModel: pool.DefaultModel,
+	}
+	for i, a := range pool.Accounts {
+		if a == nil {
+			continue
+		}
+		ca := *a
+		ca.RefreshToken = sealSecret(a.RefreshToken)
+		snap.Accounts[i] = &ca
+	}
+	for i, k := range pool.Keys {
+		snap.Keys[i] = sealSecret(k)
+	}
+	return snap
 }
 
 func addAccount(acc *Account) {
