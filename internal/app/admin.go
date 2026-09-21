@@ -46,6 +46,13 @@ func writeAPI(w http.ResponseWriter, status int, resp apiResponse) {
 
 func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/", adminStaticHandler)
+	// M4：渠道组管理 REST（WP4.1）
+	mux.HandleFunc("/admin/api/channels", adminAuth(corsHandler(handleChannelsList)))
+	mux.HandleFunc("/admin/api/channels/upsert", adminAuth(corsHandler(handleChannelsUpsert)))
+	mux.HandleFunc("/admin/api/channels/delete", adminAuth(corsHandler(handleChannelsDelete)))
+	mux.HandleFunc("/admin/api/channels/probe", adminAuth(corsHandler(handleChannelsProbe)))
+	mux.HandleFunc("/admin/api/groups/upsert", adminAuth(corsHandler(handleGroupsUpsert)))
+	mux.HandleFunc("/admin/api/groups/delete", adminAuth(corsHandler(handleGroupsDelete)))
 	mux.HandleFunc("/admin/api/accounts", adminAuth(corsHandler(handleAdminAccounts)))
 	mux.HandleFunc("/admin/api/accounts/add", adminAuth(corsHandler(handleAdminAccountAdd)))
 	mux.HandleFunc("/admin/api/accounts/delete", adminAuth(corsHandler(handleAdminAccountDelete)))
