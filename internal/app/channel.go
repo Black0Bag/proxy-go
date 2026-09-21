@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"math/rand/v2"
 	"os"
@@ -35,6 +36,35 @@ type channelRuntime struct {
 	totalRequests  atomic.Int64
 	totalLatencyMS atomic.Int64
 	totalFails     atomic.Int64 // WP1.3 熔断计数
+}
+
+// 熔断参数（WP1.3）：连续失败阈值 + 指数退避冷却 + 探测成功复位。
+const (
+	breakerAllowedFails = 3
+	breakerBaseCooldown = 5 * time.Second
+	breakerMaxCooldown  = 10 * time.Minute
+)
+
+// breaker 单渠道熔断状态。
+type breaker struct {
+	fails        int       // 当前窗口连续失败数
+	openUntil    time.Time // >now 表示熔断中
+	openCount    int       // 冷却指数退避基数（探测成功归零）
+}
+
+// open 进入熔断：冷却 = base << openCount，封顶 max。
+func (br *breaker) open(now time.Time) time.Time {
+	cooldown := breakerBaseCooldown << min(br.openCount, 20)
+	cooldown = min(cooldown, breakerMaxCooldown)
+	br.openUntil = now.Add(cooldown)
+	br.openCount++
+	br.fails = 0
+	return br.openUntil
+}
+
+// available 是否可被 Pick。
+func (br *breaker) available(now time.Time) bool {
+	return now.After(br.openUntil) || br.openUntil.IsZero()
 }
 
 func (rt *channelRuntime) avgLatencyMS() float64 {
@@ -70,6 +100,7 @@ type Balancer struct {
 	channels map[string]*Channel
 	groups   map[string]*ModelGroup
 	rt       map[string]*channelRuntime
+	breakers map[string]*breaker
 	rrIdx    map[string]int
 	sticky   map[string]stickyEntry
 }
@@ -80,6 +111,7 @@ func NewBalancer() *Balancer {
 		channels: map[string]*Channel{},
 		groups:   map[string]*ModelGroup{},
 		rt:       map[string]*channelRuntime{},
+		breakers: map[string]*breaker{},
 		rrIdx:    map[string]int{},
 		sticky:   map[string]stickyEntry{},
 	}
@@ -107,12 +139,13 @@ func (b *Balancer) UpsertGroup(g ModelGroup) {
 	}
 }
 
-// RemoveChannel 移除渠道并从所有组摘除、清理粘性。
+// RemoveChannel 移除渠道并从所有组摘除、清理粘性与熔断状态。
 func (b *Balancer) RemoveChannel(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.channels, id)
 	delete(b.rt, id)
+	delete(b.breakers, id)
 	for _, g := range b.groups {
 		g.Members = slices.DeleteFunc(g.Members, func(m string) bool { return m == id })
 	}
@@ -139,8 +172,8 @@ func (b *Balancer) Pick(groupName, sessionKey string) (*Channel, error) {
 	}
 	if sessionKey != "" {
 		if s, ok := b.sticky[sessionKey]; ok {
-			if c := b.usableMember(g, s.channelID); c != nil {
-				return c, nil
+			if slices.Contains(b.aliveMembers(g), s.channelID) {
+				return b.channels[s.channelID], nil
 			}
 			delete(b.sticky, sessionKey)
 		}
@@ -177,13 +210,18 @@ func (b *Balancer) usableMember(g *ModelGroup, id string) *Channel {
 	return c
 }
 
-// aliveMembers 过滤出可用成员 ID。
+// aliveMembers 过滤出可用成员 ID（存在、启用、未熔断）。
 func (b *Balancer) aliveMembers(g *ModelGroup) []string {
+	now := time.Now()
 	out := make([]string, 0, len(g.Members))
 	for _, id := range g.Members {
-		if b.usableMember(g, id) != nil {
-			out = append(out, id)
+		if b.usableMember(g, id) == nil {
+			continue
 		}
+		if br := b.breakers[id]; br != nil && !br.available(now) {
+			continue
+		}
+		out = append(out, id)
 	}
 	return out
 }
@@ -255,8 +293,36 @@ func (b *Balancer) pickLowestLatency(g *ModelGroup) *Channel {
 	return b.channels[minID]
 }
 
-// ReportResult 回报一次调用结果，驱动 least_used/lowest_latency 与熔断计数。
+// ReportResult 回报一次调用结果：驱动统计与熔断（success=false 计入熔断窗口）。
 func (b *Balancer) ReportResult(channelID string, latencyMS int64, success bool) {
+	b.mu.Lock()
+	rt := b.rt[channelID]
+	br := b.breakers[channelID]
+	if br == nil {
+		br = &breaker{}
+		b.breakers[channelID] = br
+	}
+	b.mu.Unlock()
+	if rt == nil {
+		return
+	}
+	rt.inflight.Add(-1)
+	rt.totalRequests.Add(1)
+	rt.totalLatencyMS.Add(max(latencyMS, 0))
+	if success {
+		br.fails = 0
+		br.openCount = 0 // 探测成功 → 完全恢复
+		return
+	}
+	rt.totalFails.Add(1)
+	if br.fails++; br.fails >= breakerAllowedFails {
+		until := br.open(time.Now())
+		log.Printf("breaker: channel %s OPEN for %s", channelID, time.Until(until).Round(time.Millisecond))
+	}
+}
+
+// ReportSoftFailure 回报不计入熔断的失败（4xx 请求本身错误等）。
+func (b *Balancer) ReportSoftFailure(channelID string, latencyMS int64) {
 	b.mu.Lock()
 	rt := b.rt[channelID]
 	b.mu.Unlock()
@@ -266,9 +332,6 @@ func (b *Balancer) ReportResult(channelID string, latencyMS int64, success bool)
 	rt.inflight.Add(-1)
 	rt.totalRequests.Add(1)
 	rt.totalLatencyMS.Add(max(latencyMS, 0))
-	if !success {
-		rt.totalFails.Add(1)
-	}
 }
 
 // NoteInflight 标记一次请求开始（Pick 后调用）。
