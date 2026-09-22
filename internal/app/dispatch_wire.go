@@ -26,8 +26,12 @@ const dispatchGroupName = "__cline_pool__"
 
 // dispatchEnabled 报告主路径是否启用 Dispatch（开关 CLINE_PROXY_DISPATCH）。
 // 未设置或非真值时返回 false，主路径保持接线前的行为。
-func dispatchEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("CLINE_PROXY_DISPATCH"))) {
+func dispatchEnabled() bool { return envTruthy("CLINE_PROXY_DISPATCH") }
+
+// envTruthy 解析布尔型环境开关：1/true/on/yes（大小写与首尾空白不敏感）为真。
+// 未设置、空值或其他取值一律为假——开关默认关闭是灰度上线的安全前提。
+func envTruthy(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "on", "yes":
 		return true
 	default:

@@ -175,15 +175,6 @@ func StartProxy(host string, port int) error {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if activeCount == 0 && len(loadPool().Accounts) == 0 {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error": map[string]string{
-					"message": "No accounts in pool. Run with --add-account or POST /admin/login to add accounts.",
-					"type":    "auth_error",
-				},
-			})
-			return
-		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -211,8 +202,33 @@ func StartProxy(host string, port int) error {
 		model, _ := params["model"].(string)
 		log.Printf("  client: stream=%v tools=%d model=%s", isStream, toolCount, model)
 
+		// 账号门禁：无 Cline 账号时拒绝服务。
+		// 注意这里已从读 body 之前移到模型解析之后——渠道组自带上游凭据、不依赖账号池，
+		// 因此「组路由开启且 model 命中已配置组名」的请求必须放行（否则只用自配渠道组的场景无法使用）。
+		// 其余模型（zen/Cline 路径）保持原有 401 语义不变。
+		if activeCount == 0 && len(loadPool().Accounts) == 0 {
+			if _, isGroupReq := matchGroupName(GlobalBalancer(), model); !groupRoutingEnabled() || !isGroupReq {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"error": map[string]string{
+						"message": "No accounts in pool. Run with --add-account or POST /admin/login to add accounts.",
+						"type":    "auth_error",
+					},
+				})
+				return
+			}
+		}
+
 		// Override system prompt from override.md for OpenAI format
 		applyOverride(params)
+
+		// 渠道组路由（M2 WP2.3b；开关 CLINE_PROXY_GROUP_ROUTING，默认关闭）。
+		// 组名即对外模型名：显式配置的组优先于 zen/Cline 内置路由。
+		if groupRoutingEnabled() {
+			if gname, ok := matchGroupName(GlobalBalancer(), model); ok {
+				handleGroupChat(w, r, params, gname, isStream)
+				return
+			}
+		}
 
 		// zen 免费模型路由
 		if route := routeModel(model); route == "zen" {

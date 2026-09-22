@@ -79,10 +79,11 @@ func (rt *channelRuntime) avgLatencyMS() float64 {
 }
 
 // ModelGroup 对外模型组：一个组名（对外即模型名）挂多个渠道成员。
+// Strategy=auto 时按请求能力过滤成员并 tier 降序调度（M2 WP2.3，见 group_route.go）。
 type ModelGroup struct {
 	Name     string   `json:"name"`
 	Members  []string `json:"members"`
-	Strategy string   `json:"strategy"` // round_robin|weighted|least_used|lowest_latency
+	Strategy string   `json:"strategy"` // round_robin|weighted|least_used|lowest_latency|auto
 }
 
 // stickyEntry 会话粘性记录。

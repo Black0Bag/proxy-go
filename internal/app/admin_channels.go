@@ -124,7 +124,8 @@ func handleGroupsUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch g.Strategy {
-	case "round_robin", "weighted", "least_used", "lowest_latency":
+	case "round_robin", "weighted", "least_used", "lowest_latency", "auto":
+		// auto：按请求能力过滤 + tier 排序 + 会话粘性（M2 WP2.3）
 	default:
 		g.Strategy = "round_robin"
 	}
