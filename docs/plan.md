@@ -6,7 +6,7 @@
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M0 | 安全与地基（admin 鉴权 / 生产级 server 骨架 / 凭据加密 / Provider 接口 / WebUI 骨架） | ✅ 完成 |
-| M1 | 渠道组 + 轮询熔断（需求1） | ⚠️ 部分完成：库与非流式接线已就绪，**流式接入未落地** |
+| M1 | 渠道组 + 轮询熔断（需求1） | ✅ 完成：库 + 非流式接线 + **流式 TTFB 接线**（`CLINE_PROXY_DISPATCH` 默认关闭） |
 | M2 | 能力分级 + auto 路由（需求2） | ⚠️ 核心完成：规则引擎已就绪，粘性主路径接线待做 |
 | M3 | 余额探活 + 签到（需求3） | ⚠️ 部分完成：5 家探针可用，调度器 / 阈值通知 / UI 待做 |
 | M4 | 外挂巡检 agent（需求4） | ⚠️ 部分完成：admin REST + 审计 JSONL 就绪，agent v1/v2 待做 |
@@ -18,7 +18,7 @@
 |---|---|---|---|
 | WP5.1 文档结构门禁 | 4 个核心文档通过 `ensure_core_docs.py` 校验且内容与事实一致 | skill 必需章节定义、仓库实测结构 | 重写后的 `goal.md` / `plan.md` / `rules.md` / `structure.md` |
 | WP5.2 CI 测试门禁 | CI 自动执行 `go vet` / `go test` / `go test -race`，且测试未过时阻断发布 | `.github/workflows/build.yml`、go.mod | 含 `test` job 的 CI 配置，`release` 依赖 `test` |
-| WP1.5-流式 流式接入 Dispatch | 流式请求也享受轮询熔断，且首字节后绝不可重试 | `dispatch.go` 的 `ErrTTFB` / `NewTTFBContext` | 可取消发射路径 + 流式接线 + 开关注入 |
+| ~~WP1.5-流式~~ ✅ 完成 | 流式请求也享受轮询熔断，且首字节后绝不可重试 | `dispatch.go` 的 `ErrTTFB` | `internal/app/ttfb.go`：可取消发射 + TTFB 首块边界 + `replayBody` 回放 |
 | WP2.3 auto 粘性接线 | auto 组会话粘性接入主路径 | `Balancer` 现有粘性入口 | 主路径接线 + 端到端验证 |
 | WP3.2-3.4 签到 / 阈值 / 面板 | 签到调度器、阈值动作通知、admin 面板 | 探针与渠道 metadata | 调度器 + 通知 + UI |
 | WP4.3-4.4 巡检 agent | v1 定时巡检日报；v2 独立进程 + policy | admin REST API、审计 JSONL | 巡检 agent + policy YAML |
@@ -27,7 +27,9 @@
 - **验收点 1（WP5.1）**：`python3 scripts/ensure_core_docs.py --project-root . --check-only` 输出 4 个文档全部为 `[EXISTS]` 且**无 `[INVALID]`**、无 `[WARN]`。
 - **验收点 2（WP5.2）**：CI 配置文件语法有效，存在 `test` job，且 `release` job 的 `needs` 包含 `test`；本地可复现 `go vet` / `go test` 全绿。
 - **验收点 3（通用）**：每 WP 过 `go build` / `go vet` / `go test`；M 级另过冒烟（E2E）。
-- **验收点 4（WP1.5-流式）**：假上游场景下，首字节前失败可换渠道、首字节后失败不换渠道（保持流已写出）。
+- **验收点 4（WP1.5-流式）** ✅ 已验证：`ttfb_test.go` 用 httptest 假上游覆盖 —— 上游返 200 响应头后
+  挂起 → `ErrTTFB` 换渠道（0.21s 内放弃，不挂死）；正常流 → 首块完整回放（`body == chunk1+chunk2`，
+  防「首字节丢失」类回归）；Dispatch 组合 → 挂起渠道自动换到健康渠道且客户端拿到完整流。
 - **验收点 5（发布安全）**：任一测试失败时，`release` job 不执行、不发新 tag。
 
 ## 风险与回滚
@@ -194,14 +196,18 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 | M4 admin REST + 审计（WP4.1-4.2） | ✅ 完成 | 84a7b9d |
 | WebUI 骨架重构（WP0.5） | ✅ 完成 | 240d1d3 |
 | WP1.5-接线（非流式 Dispatch 接入） | ✅ 完成 | ffdffcd |
-| WP5 文档 + CI 门禁 | 🔄 进行中 | 见本轮 commit |
+| WP5 文档 + CI 门禁 | ✅ 完成 | 748989f, 424ff10 |
+| WP1.5-流式（TTFB 首块边界接线） | ✅ 完成 | 见本轮 commit |
 
 E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落盘/探针 502/优雅退出。
 
 ## 遗留（下轮可继续）
-- WP1.5-流式接入：流式请求需要「首字节前可换渠道、首字节后绝不可重试」的边界语义，
-  依赖 `ErrTTFB` / `NewTTFBContext`（dispatch.go 已具备），但 `callClineAPIOnAccount` 目前用
-  `kit.HTTPClient.Do` 发射、不接受 ctx，需先补齐可取消发射路径再接入。
+- ~~WP1.5-流式接入~~ **已于本次完成**（详见执行进度表与验收点 4）。
+- TTFB 超时与「推理型慢首 token」的平衡待实测：默认 15s，可用 `CLINE_PROXY_TTFB_TIMEOUT`
+  （Go duration，如 `8s`；非法值回退 15s）调整。若某上游为长思考模型且首 token 稳定超过该阈值，
+  会被判为挂起并换渠道，需按真实模型表现校准阈值。
+- 开关关闭时的主路径仍不可取消：`callClineAPI` 走 `context.Background()`，客户端断开不会中止
+  上游请求（与接线前行为一致，故未在本 WP 改动）；如需覆盖，应作为独立 WP 处理。
 - WP2.3：auto 组会话粘性入口在 Balancer 已有，主路径接线同上
 - WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
 - WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程

@@ -241,8 +241,9 @@ func StartProxy(host string, port int) error {
 			resp *http.Response
 			acc  *Account
 		)
-		if dispatchEnabled() && !isStream {
-			// 非流式：经 Dispatch 选渠道，允许首个字节前的换账号重试
+		if dispatchEnabled() {
+			// 经 Dispatch 选渠道。流式请求在 TTFB 边界内等待上游首块：
+			// 首块到达前允许换账号，之后锁定渠道不再重试（见 ttfb.go）。
 			resp, acc, err = callClineAPIViaDispatch(r.Context(), params, upstreamStream, "")
 		} else {
 			resp, acc, err = callClineAPI(params, upstreamStream)
@@ -571,6 +572,13 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, *Account,
 // 本函数只保留 token 保障、401 刷新重试、429 冷却与用量记账等发射语义，
 // 因此可在 Dispatch 的 attempt 闭包内按渠道复用。
 func callClineAPIOnAccount(params map[string]any, stream bool, acc *Account) (*http.Response, *Account, error) {
+	// 主路径（非 Dispatch）保持不可取消语义，与接线前一致
+	return callClineAPIOnAccountCtx(context.Background(), params, stream, acc)
+}
+
+// callClineAPIOnAccountCtx 同 callClineAPIOnAccount，但接受 ctx：
+// 客户端断开或 TTFB 超时会中止正在进行的上游请求，避免白烧额度。
+func callClineAPIOnAccountCtx(ctx context.Context, params map[string]any, stream bool, acc *Account) (*http.Response, *Account, error) {
 	if acc == nil {
 		return nil, nil, fmt.Errorf("no account specified: %s", describePoolStatus())
 	}
@@ -589,7 +597,7 @@ func callClineAPIOnAccount(params map[string]any, stream bool, acc *Account) (*h
 		return nil, acc, fmt.Errorf("marshal body: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", cline.ClineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(ctx, "POST", cline.ClineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, acc, fmt.Errorf("create request: %w", err)
 	}
@@ -606,6 +614,10 @@ func callClineAPIOnAccount(params map[string]any, stream bool, acc *Account) (*h
 
 	resp, err := kit.HTTPClient.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			// 客户端断开或 TTFB 超时导致的主动中止：不是账号故障，不写冷却
+			return nil, acc, fmt.Errorf("upstream request aborted: %w", err)
+		}
 		// 网络错误：临时短冷却 5 分钟
 		markAccountCooldown(acc, "network error: "+err.Error(), 5*time.Minute)
 		return nil, acc, fmt.Errorf("upstream request: %w", err)

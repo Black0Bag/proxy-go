@@ -93,7 +93,11 @@ func upstreamStatusOf(err error) int {
 	return 0
 }
 
-// callClineAPIViaDispatch 经 Dispatch 选渠道后发射一次请求（仅非流式路径使用）。
+// callClineAPIViaDispatch 经 Dispatch 选渠道后发射一次请求。
+//
+// 非流式：直接发射，非 2xx/传输错误均可换渠道重试。
+// 流式（stream=true）：在 TTFB 边界内等待上游首块，首块到达即锁定渠道；
+// 首块之前的任何失败（429/5xx/超时/挂起）都允许换账号，见 ttfb.go。
 //
 // sessionKey 为空时不启用渠道粘性，与账号池原先 round_robin 语义保持一致。
 // 语义与 callClineAPI 对齐：成功返回上游响应与最终账号；失败返回最后一次尝试的账号与错误。
@@ -112,12 +116,34 @@ func callClineAPIViaDispatch(ctx context.Context, params map[string]any, stream 
 			// 账号在同步与发射之间被移除：计传输错误，交给 Dispatch 换下一个
 			return 0, fmt.Errorf("account %s vanished", ch.ID)
 		}
-		resp, a, err := callClineAPIOnAccount(params, stream, acc)
+
+		if !stream {
+			resp, a, err := callClineAPIOnAccountCtx(ctx, params, false, acc)
+			if err != nil {
+				return upstreamStatusOf(err), err
+			}
+			gotResp, gotAcc = resp, a
+			return resp.StatusCode, nil
+		}
+
+		// 流式：TTFB 边界内发射并等首块
+		resp, status, err := attemptStreaming(ctx, ttfbTimeout(), func(actx context.Context) (*http.Response, error) {
+			r, a, e := callClineAPIOnAccountCtx(actx, params, true, acc)
+			if e == nil {
+				gotAcc = a
+			}
+			return r, e
+		})
 		if err != nil {
+			if errors.Is(err, ErrTTFB) {
+				log.Printf("  dispatch: ttfb timeout on account=%s, trying next channel", truncateEmail(acc.Email))
+			}
 			return upstreamStatusOf(err), err
 		}
-		gotResp, gotAcc = resp, a
-		return resp.StatusCode, nil
+		if resp != nil {
+			gotResp = resp
+		}
+		return status, nil
 	})
 
 	if res.Err == nil && gotResp != nil {
@@ -128,7 +154,12 @@ func callClineAPIViaDispatch(ctx context.Context, params map[string]any, stream 
 		return gotResp, gotAcc, nil
 	}
 	if res.Err == nil {
-		res.Err = errors.New("dispatch finished without a response")
+		if res.Status != 0 {
+			// 软失败（如 400/404）：Dispatch 未产生 err，补一个带状态码的错误保持信息量
+			res.Err = upstreamStatusError{Status: res.Status, Msg: fmt.Sprintf("API %d", res.Status)}
+		} else {
+			res.Err = errors.New("dispatch finished without a response")
+		}
 	}
 	log.Printf("  dispatch: all attempts failed (attempts=%d status=%d): %v", res.Attempts, res.Status, res.Err)
 	return nil, gotAcc, res.Err
