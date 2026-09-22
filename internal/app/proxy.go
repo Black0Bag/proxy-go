@@ -237,7 +237,16 @@ func StartProxy(host string, port int) error {
 			}
 		}
 
-		resp, acc, err := callClineAPI(params, upstreamStream)
+		var (
+			resp *http.Response
+			acc  *Account
+		)
+		if dispatchEnabled() && !isStream {
+			// 非流式：经 Dispatch 选渠道，允许首个字节前的换账号重试
+			resp, acc, err = callClineAPIViaDispatch(r.Context(), params, upstreamStream, "")
+		} else {
+			resp, acc, err = callClineAPI(params, upstreamStream)
+		}
 		if err != nil {
 			log.Printf("  api error: %v", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -642,7 +651,8 @@ func callClineAPIOnAccount(params map[string]any, stream bool, acc *Account) (*h
 			markAccountCooldown(acc, "429: "+reason, duration)
 			log.Printf("  account %s cooldown %v (reason: %s)", truncateEmail(acc.Email), duration, reason)
 		}
-		return nil, acc, fmt.Errorf("API %d: %s", resp.StatusCode, kit.Truncate(string(bodyBytes), 500))
+		return nil, acc, upstreamStatusError{Status: resp.StatusCode,
+			Msg: fmt.Sprintf("API %d: %s", resp.StatusCode, kit.Truncate(string(bodyBytes), 500))}
 	}
 
 	bumpUsage(acc)

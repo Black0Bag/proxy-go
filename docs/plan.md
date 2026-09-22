@@ -127,7 +127,15 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落盘/探针 502/优雅退出。
 
 ## 遗留（下轮可继续）
-- WP1.5-接线：Dispatch 接入 proxy.go 主转发路径（当前为库+测试完备，未切主路径，避免大爆炸）；已完成前置解耦：抽出 `callClineAPIOnAccount`，账号选择与请求发射分离（行为等价，主路径未切换）
+- ~~WP1.5-接线：Dispatch 接入 proxy.go 主转发路径~~ **已完成（非流式）**：新增 `dispatch_wire.go`，
+  非流式请求经 `callClineAPIViaDispatch` 接入 Dispatch（允许首字节前换账号重试）；
+  开关 `CLINE_PROXY_DISPATCH`（1/true/on/yes 开启），**默认关闭**，关闭时主路径行为与接线前一致，可随时回退。
+  账号池仍是凭据唯一来源：每次调度前把 active 账号同步为系统组 `__cline_pool__` 成员（Channel 不落 token）。
+  前置解耦：`callClineAPIOnAccount` 分离账号选择与请求发射；`upstreamStatusError` 让状态码可被 `errors.As` 取回（错误文本不变）。
+  流式请求（`isStream`）**未接入**，仍走原路径 —— 见下方 TTFB 遗留项。
+- WP1.5 流式接入：流式请求需要「首字节前可换渠道、首字节后绝不可重试」的边界语义，
+  依赖 `ErrTTFB` / `NewTTFBContext`（dispatch.go 已具备），但 `callClineAPIOnAccount` 目前用
+  `kit.HTTPClient.Do` 发射、不接受 ctx，需先补齐可取消发射路径再接入。
 - WP2.3：auto 组会话粘性入口在 Balancer 已有，主路径接线同上
 - WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
 - WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程
