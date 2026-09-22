@@ -1,6 +1,83 @@
 # 实施计划（Plan）
 
-## 任务定性
+> 文档结构门禁回填（2026-09-22）：按 vibe-coding-workflow skill 必需章节（里程碑 / 任务拆解 / 验收节点 / 风险与回滚）重组；历史计划内容完整保留于文末归档区，未删除任何既有信息。
+
+## 里程碑
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| M0 | 安全与地基（admin 鉴权 / 生产级 server 骨架 / 凭据加密 / Provider 接口 / WebUI 骨架） | ✅ 完成 |
+| M1 | 渠道组 + 轮询熔断（需求1） | ⚠️ 部分完成：库与非流式接线已就绪，**流式接入未落地** |
+| M2 | 能力分级 + auto 路由（需求2） | ⚠️ 核心完成：规则引擎已就绪，粘性主路径接线待做 |
+| M3 | 余额探活 + 签到（需求3） | ⚠️ 部分完成：5 家探针可用，调度器 / 阈值通知 / UI 待做 |
+| M4 | 外挂巡检 agent（需求4） | ⚠️ 部分完成：admin REST + 审计 JSONL 就绪，agent v1/v2 待做 |
+| M5 | **门禁与工程化（本轮）**：文档结构门禁 + CI 测试门禁 | 🔄 本轮执行 |
+| M6 | WebUI 面板填充（各 M 的 UI 工作包） | ⏳ 待排 |
+
+## 任务拆解
+| 任务 | 目标 | 输入 | 输出 |
+|---|---|---|---|
+| WP5.1 文档结构门禁 | 4 个核心文档通过 `ensure_core_docs.py` 校验且内容与事实一致 | skill 必需章节定义、仓库实测结构 | 重写后的 `goal.md` / `plan.md` / `rules.md` / `structure.md` |
+| WP5.2 CI 测试门禁 | CI 自动执行 `go vet` / `go test` / `go test -race`，且测试未过时阻断发布 | `.github/workflows/build.yml`、go.mod | 含 `test` job 的 CI 配置，`release` 依赖 `test` |
+| WP1.5-流式 流式接入 Dispatch | 流式请求也享受轮询熔断，且首字节后绝不可重试 | `dispatch.go` 的 `ErrTTFB` / `NewTTFBContext` | 可取消发射路径 + 流式接线 + 开关注入 |
+| WP2.3 auto 粘性接线 | auto 组会话粘性接入主路径 | `Balancer` 现有粘性入口 | 主路径接线 + 端到端验证 |
+| WP3.2-3.4 签到 / 阈值 / 面板 | 签到调度器、阈值动作通知、admin 面板 | 探针与渠道 metadata | 调度器 + 通知 + UI |
+| WP4.3-4.4 巡检 agent | v1 定时巡检日报；v2 独立进程 + policy | admin REST API、审计 JSONL | 巡检 agent + policy YAML |
+
+## 验收节点
+- **验收点 1（WP5.1）**：`python3 scripts/ensure_core_docs.py --project-root . --check-only` 输出 4 个文档全部为 `[EXISTS]` 且**无 `[INVALID]`**、无 `[WARN]`。
+- **验收点 2（WP5.2）**：CI 配置文件语法有效，存在 `test` job，且 `release` job 的 `needs` 包含 `test`；本地可复现 `go vet` / `go test` 全绿。
+- **验收点 3（通用）**：每 WP 过 `go build` / `go vet` / `go test`；M 级另过冒烟（E2E）。
+- **验收点 4（WP1.5-流式）**：假上游场景下，首字节前失败可换渠道、首字节后失败不换渠道（保持流已写出）。
+- **验收点 5（发布安全）**：任一测试失败时，`release` job 不执行、不发新 tag。
+
+## 风险与回滚
+- **通用回滚纪律**：所有改动以 commit 粒度落盘，`git revert <commit>` 即可完全回滚；1 WP = 1 commit，禁止把多个 WP 混进同一提交。
+- **本轮风险 1（CI 变更影响发布流程）**：让 `release` 依赖 `test` 后，测试失败会阻断发版——这是**预期行为**，但若测试本身存在环境脆弱性（如依赖外网），可能造成误阻断。
+  - 缓解：测试须可重复、不依赖外网与真实凭据；`-race` 仅在 ubuntu-latest 执行（真内核 + gcc 可用）。
+  - 回滚：还原 `.github/workflows/build.yml` 至改动前版本（移除 `test` job、恢复 `release.needs: build`）。
+- **本轮风险 2（-race 无法本地验证）**：本地 proot 环境 ThreadSanitizer 不可用（`unsupported VMA range`），无法在本地证明 `-race` 通过。
+  - 缓解：如实标注该限制，首次 CI 运行需人工观察；`-race` 与普通 `go test` 均保留，避免单点失败导致门禁整体失效。
+  - 回滚：无代码影响，属配置层，可直接调整。
+- **本轮风险 3（文档重写引入失真）**：重写 `structure.md` 若引入未核实描述，会制造新的"文档与事实不符"。
+  - 缓解：所有行数、文件清单均来自实测（`wc -l`）；历史内容不删除，仅重组。
+- **历史风险（PR 移植期）**：cherry-pick 若因 main 演进产生冲突 → 人工比对 PR diff 逐块解决；降级聚合路径为纯新增分支，不影响正常流式路径。
+
+---
+
+## 本轮详细计划：WP5 文档结构门禁 + CI 测试门禁（2026-09-22）
+
+### 背景与门禁证据
+`ensure_core_docs.py --check-only` 实测结果：4 个文档均为 `[EXISTS]` 但**全部 `[INVALID]`**——
+- `goal.md` 缺：`## 项目背景` / `## 总目标` / `## 成功标准` / `## 范围边界（做 / 不做）` / `## 约束条件`
+- `plan.md` 缺：`## 里程碑` / `## 任务拆解` / `## 验收节点` / `## 风险与回滚`
+- `rules.md` 缺：8 个必需章节全部缺失
+- `structure.md` 缺：`## 模块划分` / `## 数据流/调用关系` / `## 依赖与外部接口` / `## 关键入口文件`
+
+CI 门禁证据：`.github/workflows/build.yml`（115 行）仅有 `build`（多平台 matrix）与 `release`（语义化打 tag）两个 job，**无 `go vet`、无 `go test`、无 `-race`**；且 `release.needs: build`，即测试即使失败也照样发版。
+
+### 改动范围
+- `docs/goal.md`：补齐 5 章节 + 纠正过期的"当前任务目标"（原停留在 PR 移植期）。
+- `docs/plan.md`：补齐 3 章节 + 更新进度表与遗留清单（不删除历史）。
+- `docs/rules.md`：补齐 8 章节，沉淀可复用规则。
+- `docs/structure.md`：按实测重写（原"与 b07b46e 一致、proxy.go 2042 行"与事实严重不符）。
+- `.github/workflows/build.yml`：新增 `test` job（vet + test + -race），`release` 改为 `needs: [build, test]`。
+
+### 验证方式
+1. `python3 <skill>/scripts/ensure_core_docs.py --project-root /workspace/Cline-proxy --check-only` → 无 INVALID / 无 WARN。
+2. `go build ./... && go vet ./... && go test ./...` 全绿。
+3. CI YAML 语法校验（如 `actionlint` 或 python yaml 解析）。
+4. `git diff --stat` 核对改动范围与计划一致。
+
+### 明确不做（本轮）
+- 不升级 Actions 大版本（实测 `setup-go` 最新 v7.0.0、`checkout` v7.0.1、`upload-artifact` v7.0.1，跨大版本升级需独立验证，避免与门禁变更混合）。
+- 不整仓 `gofmt`（既有 10 个文件格式债，单独立项）。
+- 不改任何业务逻辑（`internal/**` 非文档文件零改动）。
+
+---
+
+# 归档：历史计划与路线图（原文保留）
+
+## 任务定性（PR 移植期）
 - 场景：2（基于已有代码）+ 3（缺陷修复）
 - 门禁等级：L2（多文件、需读调用链、移植外部修复）
 - 用户授权：用户已明确指示"对本地代码一并解决"，本计划落盘即视为确认。
@@ -18,29 +95,24 @@
 
 main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flush；proxy.go:266 存在裸断言；admin_html.go:1016 toast 读取字段错误。
 
-## 实施步骤
+## 实施步骤（PR 移植期）
 1. `git cherry-pick 76a032b`（PR#5：proxy.go 降级聚合 + panic 修复；与 main 无分叉，应干净应用）
 2. `git cherry-pick f832b02`（PR#10：logs.go Flush 增强 + admin_html.go toast；与步骤 1 无文件交集，无冲突）
 3. 新增 `internal/app/logs_test.go`：statusWriter 实现 http.Flusher 接口断言 + Flush 透传与状态补写测试（项目首个测试）
 4. 验证：`go build ./... && go vet ./... && go test ./...`（PATH 需含 /usr/local/go/bin）
 
-## 影响范围
+## 影响范围（PR 移植期）
 - internal/app/logs.go（+10 行）
 - internal/app/proxy.go（约 +165/-10 行，流式 handler 两处）
 - internal/app/admin_html.go（1 行）
 - internal/app/logs_test.go（新增）
 - docs/*.md（新增，不影响构建）
 
-## 验证方式
+## 验证方式（PR 移植期）
 1. 编译通过（go build）
 2. vet 零告警
 3. 新增单测通过（go test）
 4. 冒烟：构建产物可启动并响应 /admin/（如环境允许）
-
-## 风险与回滚
-- 风险：cherry-pick 若因 main 演进产生冲突 → 人工比对 PR diff 逐块解决；降级聚合路径为纯新增分支，不影响正常流式路径
-- 回滚：所有改动以 commit 粒度落盘，`git revert` 两个 cherry-pick commit 即可完全回滚；测试文件独立，直接删除即回滚
-
 
 ---
 
@@ -92,7 +164,6 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 - 顺序强制：M0→M1→M2→M3→M4，不得跳级（M2 依赖 M1 熔断，M3 依赖 M0 Provider/加密，M4 依赖全部 API 化）
 - 范围外（明确不做）：PR#11 ClinePass/Codex feature、PR#6 UI 换肤、数据库引入、前端框架化
 
-
 ---
 
 # WebUI 重构决策（2026-09-22，用户已授权全项目执行）
@@ -110,7 +181,6 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 - WP0.5（M0）：WebUI 骨架重构（拆分 + embed + tab 框架 + API 客户端 + 鉴权接入）
 - 各 M 的 UI 工作包在新骨架对应 tab 内扩展（WP1.7 渠道组面板 / WP2.4 auto 标签面板 / WP3.4 余额签到面板 / WP4.5 巡检面板）
 
-
 ---
 
 # 执行进度（2026-09-22 一口气执行结果）
@@ -118,26 +188,23 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 | 里程碑 | 状态 | commit |
 |---|---|---|
 | M0 安全与地基（WP0.1-0.5） | ✅ 完成 | 240d1d3, e29daf4 |
-| M1 渠道组+轮询熔断（WP1.1-1.5） | ✅ 完成 | f8c5d93, fc2ebf0, 3ee95e7 |
+| M1 渠道组+轮询熔断（WP1.1-1.5） | ⚠️ 库完成，流式未接入 | f8c5d93, fc2ebf0, 3ee95e7 |
 | M2 auto 路由规则引擎（WP2.1-2.2 核心） | ✅ 完成 | 9eb56fd |
 | M3 余额探针 5 家（WP3.1 核心） | ✅ 完成 | 9eb56fd |
 | M4 admin REST + 审计（WP4.1-4.2） | ✅ 完成 | 84a7b9d |
 | WebUI 骨架重构（WP0.5） | ✅ 完成 | 240d1d3 |
+| WP1.5-接线（非流式 Dispatch 接入） | ✅ 完成 | ffdffcd |
+| WP5 文档 + CI 门禁 | 🔄 进行中 | 见本轮 commit |
 
 E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落盘/探针 502/优雅退出。
 
 ## 遗留（下轮可继续）
-- ~~WP1.5-接线：Dispatch 接入 proxy.go 主转发路径~~ **已完成（非流式）**：新增 `dispatch_wire.go`，
-  非流式请求经 `callClineAPIViaDispatch` 接入 Dispatch（允许首字节前换账号重试）；
-  开关 `CLINE_PROXY_DISPATCH`（1/true/on/yes 开启），**默认关闭**，关闭时主路径行为与接线前一致，可随时回退。
-  账号池仍是凭据唯一来源：每次调度前把 active 账号同步为系统组 `__cline_pool__` 成员（Channel 不落 token）。
-  前置解耦：`callClineAPIOnAccount` 分离账号选择与请求发射；`upstreamStatusError` 让状态码可被 `errors.As` 取回（错误文本不变）。
-  流式请求（`isStream`）**未接入**，仍走原路径 —— 见下方 TTFB 遗留项。
-- WP1.5 流式接入：流式请求需要「首字节前可换渠道、首字节后绝不可重试」的边界语义，
+- WP1.5-流式接入：流式请求需要「首字节前可换渠道、首字节后绝不可重试」的边界语义，
   依赖 `ErrTTFB` / `NewTTFBContext`（dispatch.go 已具备），但 `callClineAPIOnAccount` 目前用
   `kit.HTTPClient.Do` 发射、不接受 ctx，需先补齐可取消发射路径再接入。
 - WP2.3：auto 组会话粘性入口在 Balancer 已有，主路径接线同上
 - WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
 - WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程
 - WebUI 渠道组/auto/余额 tab 面板填充（骨架已留 tab 位）
-- go test -race 移交 CI（proot TSan 限制）
+- Actions 组件大版本升级（setup-go v5→v7.0.0、checkout v4→v7.0.1、upload-artifact v4→v7.0.1）——需独立验证 breaking change
+- `internal/app` 既有 10 个文件 `gofmt` 不规范——建议单独立一个纯格式化 commit
