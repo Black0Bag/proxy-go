@@ -28,6 +28,9 @@ type Channel struct {
 	Weight   int               `json:"weight"`               // weighted 策略，<=0 视为 1
 	ModelMap map[string]string `json:"model_map,omitempty"`  // 对外模型名 → 上游模型名
 	Disabled bool              `json:"disabled,omitempty"`
+	// Caps M2 WP2.1 能力标签（auto 路由用）。
+	// nil 表示未标注 → 按「能力未知但可用」处理（见 annotatedCaps），不会因此被硬过滤掉。
+	Caps *ModelCaps `json:"caps,omitempty"`
 }
 
 // channelRuntime 运行态，不落盘。
@@ -156,6 +159,90 @@ func (b *Balancer) RemoveChannel(id string) {
 	}
 }
 
+// pruneStickyLocked 清理过期粘性记录（需持有 b.mu）。
+func (b *Balancer) pruneStickyLocked(now time.Time) {
+	for k, v := range b.sticky {
+		if now.After(v.until) {
+			delete(b.sticky, k)
+		}
+	}
+}
+
+// setStickyLocked 记录/刷新会话粘性（sessionKey 为空时不做任何事，需持有 b.mu）。
+func (b *Balancer) setStickyLocked(sessionKey, channelID string, now time.Time) {
+	if sessionKey == "" {
+		return
+	}
+	b.sticky[sessionKey] = stickyEntry{channelID: channelID, until: now.Add(stickyTTL)}
+}
+
+// aliveByIDLocked 渠道存在、启用且未熔断时返回它，否则返回 nil（需持有 b.mu）。
+func (b *Balancer) aliveByIDLocked(id string) *Channel {
+	c := b.channels[id]
+	if c == nil || c.Disabled {
+		return nil
+	}
+	if br := b.breakers[id]; br != nil && !br.available(time.Now()) {
+		return nil
+	}
+	return c
+}
+
+// pickOrdered 按显式候选顺序选渠道（M2 auto 路由）：
+// 粘性命中优先（须仍在本轮候选内且可用），否则取候选顺序中首个可用渠道并记录粘性。
+func (b *Balancer) pickOrdered(candidates []string, sessionKey string) (*Channel, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	b.pruneStickyLocked(now)
+	if sessionKey != "" {
+		if s, ok := b.sticky[sessionKey]; ok {
+			if slices.Contains(candidates, s.channelID) {
+				if c := b.aliveByIDLocked(s.channelID); c != nil {
+					return c, nil
+				}
+			}
+			// 粘性渠道已不在候选内（能力不再匹配）或不可用：失效重选
+			delete(b.sticky, sessionKey)
+		}
+	}
+	for _, id := range candidates {
+		if c := b.aliveByIDLocked(id); c != nil {
+			b.setStickyLocked(sessionKey, id, now)
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("%w (ordered candidates)", ErrNoChannel)
+}
+
+// nextUntriedOrdered 按候选顺序返回首个未试过的可用渠道（需持有 b.mu 由内部加锁）。
+func (b *Balancer) nextUntriedOrdered(candidates []string, tried map[string]bool) *Channel {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, id := range candidates {
+		if tried[id] {
+			continue
+		}
+		if c := b.aliveByIDLocked(id); c != nil {
+			return c
+		}
+	}
+	return nil
+}
+
+// aliveInCandidates 候选内当前可用（存在/启用/未熔断）渠道数。
+func (b *Balancer) aliveInCandidates(candidates []string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := 0
+	for _, id := range candidates {
+		if b.aliveByIDLocked(id) != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // Pick 按组策略选择渠道；sessionKey 非空时启用 60min 会话粘性。
 func (b *Balancer) Pick(groupName, sessionKey string) (*Channel, error) {
 	b.mu.Lock()
@@ -165,11 +252,7 @@ func (b *Balancer) Pick(groupName, sessionKey string) (*Channel, error) {
 		return nil, fmt.Errorf("%w %q", ErrNoChannel, groupName)
 	}
 	now := time.Now()
-	for k, v := range b.sticky {
-		if now.After(v.until) {
-			delete(b.sticky, k)
-		}
-	}
+	b.pruneStickyLocked(now)
 	if sessionKey != "" {
 		if s, ok := b.sticky[sessionKey]; ok {
 			if slices.Contains(b.aliveMembers(g), s.channelID) {
@@ -192,9 +275,7 @@ func (b *Balancer) Pick(groupName, sessionKey string) (*Channel, error) {
 	if picked == nil {
 		return nil, fmt.Errorf("%w %q", ErrNoChannel, groupName)
 	}
-	if sessionKey != "" {
-		b.sticky[sessionKey] = stickyEntry{channelID: picked.ID, until: now.Add(stickyTTL)}
-	}
+	b.setStickyLocked(sessionKey, picked.ID, now)
 	return picked, nil
 }
 

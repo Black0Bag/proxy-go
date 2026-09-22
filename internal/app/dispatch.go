@@ -23,6 +23,54 @@ type DispatchResult struct {
 	Retryable bool   // 建议调用方对客户端返回可重试语义（5xx/429/网络错）
 }
 
+// channelPicker 把「选渠道」从调度骨架中解耦：
+// groupPicker 走组策略（Pick/nextUntried），orderedPicker 走显式候选顺序（auto 路由）。
+type channelPicker interface {
+	first() (*Channel, error)            // 首个候选（尊重粘性）
+	next(tried map[string]bool) *Channel // 重试时的下一个候选
+	aliveCount() int                     // 当前可用候选数（用于计算最大尝试次数）
+}
+
+// groupPicker 按 ModelGroup 策略挑选（M1 语义，Dispatch 使用）。
+type groupPicker struct {
+	b          *Balancer
+	groupName  string
+	sessionKey string
+}
+
+func (p *groupPicker) first() (*Channel, error) { return p.b.Pick(p.groupName, p.sessionKey) }
+
+func (p *groupPicker) next(tried map[string]bool) *Channel {
+	return p.b.nextUntried(p.groupName, tried)
+}
+
+func (p *groupPicker) aliveCount() int {
+	p.b.mu.Lock()
+	defer p.b.mu.Unlock()
+	g, ok := p.b.groups[p.groupName]
+	if !ok {
+		return 0
+	}
+	return len(p.b.aliveMembers(g))
+}
+
+// orderedPicker 按显式候选顺序挑选（M2 auto 路由，DispatchOrdered 使用）。
+type orderedPicker struct {
+	b          *Balancer
+	candidates []string
+	sessionKey string
+}
+
+func (p *orderedPicker) first() (*Channel, error) {
+	return p.b.pickOrdered(p.candidates, p.sessionKey)
+}
+
+func (p *orderedPicker) next(tried map[string]bool) *Channel {
+	return p.b.nextUntriedOrdered(p.candidates, tried)
+}
+
+func (p *orderedPicker) aliveCount() int { return p.b.aliveInCandidates(p.candidates) }
+
 // Dispatch 在 groupName 组内执行 attempt：
 //   - attempt 收到选中渠道，返回 (httpStatus, err)；err==nil 且 2xx 视为成功
 //   - 429/5xx/传输错误 → 计熔断并换下一渠道
@@ -31,19 +79,25 @@ type DispatchResult struct {
 //
 // ctx 取消立即终止。maxAttempts<=0 时取组内可用数与 MaxDispatchAttempts 的较小值。
 func (b *Balancer) Dispatch(ctx context.Context, groupName, sessionKey string, maxAttempts int, attempt func(ch *Channel) (int, error)) DispatchResult {
+	return b.dispatch(ctx, &groupPicker{b: b, groupName: groupName, sessionKey: sessionKey}, maxAttempts, attempt)
+}
+
+// DispatchOrdered 按显式候选顺序调度（M2 WP2.3，auto 路由用），其余语义与 Dispatch 完全一致：
+// 尊重粘性/熔断/禁用，失败按错误分类换下一个候选，400/422 不换渠道。
+// candidates 通常来自 AutoCandidates（已按能力过滤 + tier 排序）。
+func (b *Balancer) DispatchOrdered(ctx context.Context, candidates []string, sessionKey string, maxAttempts int, attempt func(ch *Channel) (int, error)) DispatchResult {
+	return b.dispatch(ctx, &orderedPicker{b: b, candidates: candidates, sessionKey: sessionKey}, maxAttempts, attempt)
+}
+
+// dispatch 调度骨架：选渠道 → attempt → 错误分类 → 换渠道重试 的公共流程。
+func (b *Balancer) dispatch(ctx context.Context, p channelPicker, maxAttempts int, attempt func(ch *Channel) (int, error)) DispatchResult {
 	res := DispatchResult{}
 	if err := ctx.Err(); err != nil {
 		res.Err = err
 		return res
 	}
-	b.mu.Lock()
-	g, ok := b.groups[groupName]
-	alive := 0
-	if ok {
-		alive = len(b.aliveMembers(g))
-	}
-	b.mu.Unlock()
-	if !ok || alive == 0 {
+	alive := p.aliveCount()
+	if alive == 0 {
 		res.Err = ErrNoChannel
 		return res
 	}
@@ -64,15 +118,15 @@ func (b *Balancer) Dispatch(ctx context.Context, groupName, sessionKey string, m
 			return res
 		}
 		if i == 0 {
-			// 首选：尊重粘性的 Pick
+			// 首选：尊重粘性
 			var err error
-			ch, err = b.Pick(groupName, sessionKey)
+			ch, err = p.first()
 			if err != nil {
-				break // 组内无可用渠道（全熔断/空）
+				break // 无可用渠道（全熔断/空/候选全不可用）
 			}
 		} else {
-			// 重试：确定性选取组内第一个未试过的可用渠道
-			ch = b.nextUntried(groupName, tried)
+			// 重试：确定性选取下一个未试过的可用渠道
+			ch = p.next(tried)
 			if ch == nil {
 				break
 			}

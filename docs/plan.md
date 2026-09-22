@@ -7,7 +7,7 @@
 |---|---|---|
 | M0 | 安全与地基（admin 鉴权 / 生产级 server 骨架 / 凭据加密 / Provider 接口 / WebUI 骨架） | ✅ 完成 |
 | M1 | 渠道组 + 轮询熔断（需求1） | ✅ 完成：库 + 非流式接线 + **流式 TTFB 接线**（`CLINE_PROXY_DISPATCH` 默认关闭） |
-| M2 | 能力分级 + auto 路由（需求2） | ⚠️ 核心完成：规则引擎已就绪，粘性主路径接线待做 |
+| M2 | 能力分级 + auto 路由（需求2） | ⚠️ 基础层完成：规则引擎 + 能力标签 + 按序调度（`DispatchOrdered`）已就绪；**通用渠道转发通路待建**（见遗留） |
 | M3 | 余额探活 + 签到（需求3） | ⚠️ 部分完成：5 家探针可用，调度器 / 阈值通知 / UI 待做 |
 | M4 | 外挂巡检 agent（需求4） | ⚠️ 部分完成：admin REST + 审计 JSONL 就绪，agent v1/v2 待做 |
 | M5 | **门禁与工程化（本轮）**：文档结构门禁 + CI 测试门禁 | 🔄 本轮执行 |
@@ -19,7 +19,8 @@
 | WP5.1 文档结构门禁 | 4 个核心文档通过 `ensure_core_docs.py` 校验且内容与事实一致 | skill 必需章节定义、仓库实测结构 | 重写后的 `goal.md` / `plan.md` / `rules.md` / `structure.md` |
 | WP5.2 CI 测试门禁 | CI 自动执行 `go vet` / `go test` / `go test -race`，且测试未过时阻断发布 | `.github/workflows/build.yml`、go.mod | 含 `test` job 的 CI 配置，`release` 依赖 `test` |
 | ~~WP1.5-流式~~ ✅ 完成 | 流式请求也享受轮询熔断，且首字节后绝不可重试 | `dispatch.go` 的 `ErrTTFB` | `internal/app/ttfb.go`：可取消发射 + TTFB 首块边界 + `replayBody` 回放 |
-| WP2.3 auto 粘性接线 | auto 组会话粘性接入主路径 | `Balancer` 现有粘性入口 | 主路径接线 + 端到端验证 |
+| ~~WP2.3a 基础层~~ ✅ 完成 | 能力标签 + auto 候选计算 + 按序调度（粘性/熔断语义） | Channel 无 Caps；Balancer 只能按组策略选 | `Channel.Caps`、`AutoCandidates`、`DispatchOrdered` + 16 个单测 |
+| WP2.3b 转发通路 | `model=auto` 端到端可用 | 需通用渠道转发实现 | 待做（见遗留） |
 | WP3.2-3.4 签到 / 阈值 / 面板 | 签到调度器、阈值动作通知、admin 面板 | 探针与渠道 metadata | 调度器 + 通知 + UI |
 | WP4.3-4.4 巡检 agent | v1 定时巡检日报；v2 独立进程 + policy | admin REST API、审计 JSONL | 巡检 agent + policy YAML |
 
@@ -197,7 +198,8 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 | WebUI 骨架重构（WP0.5） | ✅ 完成 | 240d1d3 |
 | WP1.5-接线（非流式 Dispatch 接入） | ✅ 完成 | ffdffcd |
 | WP5 文档 + CI 门禁 | ✅ 完成 | 748989f, 424ff10 |
-| WP1.5-流式（TTFB 首块边界接线） | ✅ 完成 | 见本轮 commit |
+| WP1.5-流式（TTFB 首块边界接线） | ✅ 完成 | 3d92f18 |
+| WP2.3a auto 基础层（能力标签 + 候选计算 + 按序调度） | ✅ 完成 | 见本轮 commit |
 
 E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落盘/探针 502/优雅退出。
 
@@ -208,7 +210,18 @@ E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落
   会被判为挂起并换渠道，需按真实模型表现校准阈值。
 - 开关关闭时的主路径仍不可取消：`callClineAPI` 走 `context.Background()`，客户端断开不会中止
   上游请求（与接线前行为一致，故未在本 WP 改动）；如需覆盖，应作为独立 WP 处理。
-- WP2.3：auto 组会话粘性入口在 Balancer 已有，主路径接线同上
+- **WP2.3b 通用渠道转发通路（M2 真正的端到端缺口）**：本轮侦察确认——
+  `proxy.go` 主路径的 `model` 只分两类：`routeModel(model)` 命中 zen 则走 `handleZenChat`，
+  否则一律走 **Cline 账号池**；admin 配置的通用渠道组（`data/channels.json`）**从未被主转发路径消费**。
+  且 `provider.Provider` 接口只有 `Name/ListModels/ProbeBalance`，**没有 Chat 转发**
+  （`provider.go` 注释称"Chat 转发接口在 M1 Channel 落地时扩展"，实际未扩展）。
+  因此 `model=auto` 端到端可用需要先补：① 通用渠道的 OpenAI-compatible 转发实现
+  （用 `Channel.BaseURL` + `APIKey` + `ModelMap`）② 主路径按组名分发（`model` 命中组名 → 走组转发）
+  ③ 把 `AutoCandidates` + `DispatchOrdered` 接入该转发路径。届时可使用 `ExtractFeatures` 提取请求特征。
+- **WP2.4**：admin 标签编辑界面（`Channel.Caps` 已可序列化，仅缺 UI 表单）。
+- **安全债（新发现，非本轮引入）**：`data/channels.json` 中渠道 `APIKey` **明文落盘**
+  （`channel.go` 的 `Save` 注释明示"含 APIKey"），与 goal.md 约束「凭据禁止明文落盘（AES-GCM）」
+  不符；`secretbox.go` 目前只覆盖账号池 token。建议单独立项按 M0 加密方案处理，需提供迁移与回滚。
 - WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
 - WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程
 - WebUI 渠道组/auto/余额 tab 面板填充（骨架已留 tab 位）
