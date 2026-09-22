@@ -554,6 +554,17 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, *Account,
 	if acc == nil {
 		return nil, nil, fmt.Errorf("no active accounts available: %s", describePoolStatus())
 	}
+	return callClineAPIOnAccount(params, stream, acc)
+}
+
+// callClineAPIOnAccount 在指定账号上发射一次 chat/completions 请求（WP1.5 接线前置）。
+// 账号选择上移到调用方：pickAccount 走账号池策略，Dispatch 走渠道挑选；
+// 本函数只保留 token 保障、401 刷新重试、429 冷却与用量记账等发射语义，
+// 因此可在 Dispatch 的 attempt 闭包内按渠道复用。
+func callClineAPIOnAccount(params map[string]any, stream bool, acc *Account) (*http.Response, *Account, error) {
+	if acc == nil {
+		return nil, nil, fmt.Errorf("no account specified: %s", describePoolStatus())
+	}
 
 	token, err := ensureAccountToken(acc)
 	if err != nil {

@@ -127,7 +127,7 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落盘/探针 502/优雅退出。
 
 ## 遗留（下轮可继续）
-- WP1.5-接线：Dispatch 接入 proxy.go 主转发路径（当前为库+测试完备，未切主路径，避免大爆炸）
+- WP1.5-接线：Dispatch 接入 proxy.go 主转发路径（当前为库+测试完备，未切主路径，避免大爆炸）；已完成前置解耦：抽出 `callClineAPIOnAccount`，账号选择与请求发射分离（行为等价，主路径未切换）
 - WP2.3：auto 组会话粘性入口在 Balancer 已有，主路径接线同上
 - WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
 - WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程
