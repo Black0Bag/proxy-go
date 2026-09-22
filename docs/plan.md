@@ -109,3 +109,27 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 ## 新增工作包
 - WP0.5（M0）：WebUI 骨架重构（拆分 + embed + tab 框架 + API 客户端 + 鉴权接入）
 - 各 M 的 UI 工作包在新骨架对应 tab 内扩展（WP1.7 渠道组面板 / WP2.4 auto 标签面板 / WP3.4 余额签到面板 / WP4.5 巡检面板）
+
+
+---
+
+# 执行进度（2026-09-22 一口气执行结果）
+
+| 里程碑 | 状态 | commit |
+|---|---|---|
+| M0 安全与地基（WP0.1-0.5） | ✅ 完成 | 240d1d3, e29daf4 |
+| M1 渠道组+轮询熔断（WP1.1-1.5） | ✅ 完成 | f8c5d93, fc2ebf0, 3ee95e7 |
+| M2 auto 路由规则引擎（WP2.1-2.2 核心） | ✅ 完成 | 9eb56fd |
+| M3 余额探针 5 家（WP3.1 核心） | ✅ 完成 | 9eb56fd |
+| M4 admin REST + 审计（WP4.1-4.2） | ✅ 完成 | 84a7b9d |
+| WebUI 骨架重构（WP0.5） | ✅ 完成 | 240d1d3 |
+
+E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落盘/探针 502/优雅退出。
+
+## 遗留（下轮可继续）
+- WP1.5-接线：Dispatch 接入 proxy.go 主转发路径（当前为库+测试完备，未切主路径，避免大爆炸）
+- WP2.3：auto 组会话粘性入口在 Balancer 已有，主路径接线同上
+- WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
+- WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程
+- WebUI 渠道组/auto/余额 tab 面板填充（骨架已留 tab 位）
+- go test -race 移交 CI（proot TSan 限制）
