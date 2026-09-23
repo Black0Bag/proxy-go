@@ -1,0 +1,46 @@
+name: CI
+
+# 快速门禁：push 到 main / PR 时执行格式检查与测试，不发版。
+# 发布由打 tag（v*）触发，见 release.yml。
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Format / Vet / Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: gofmt check
+        run: |
+          set -euo pipefail
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::gofmt 检查未通过，以下文件需要格式化："
+            printf '%s\n' "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./... -count=1
+
+      - name: Race detector
+        run: go test -race ./... -count=1

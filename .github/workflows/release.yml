@@ -1,11 +1,13 @@
-name: Build Release
+name: Release
 
+# 发布：打 v* tag 时触发（如 git tag -a v0.0.4 -m "..." && git push origin v0.0.4）。
+# 构建 6 平台二进制并创建 GitHub Release；tag 上再次跑测试作为最终校验。
 on:
   push:
-    branches: [ main ]
+    tags: [ 'v*' ]
 
 concurrency:
-  group: release-main
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -51,8 +53,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -72,17 +72,14 @@ jobs:
           name: cline-proxy-${{ matrix.target }}
           path: cline-proxy-${{ matrix.target }}${{ matrix.ext }}
 
-  # 测试门禁：任一测试失败则 release 不执行，阻断"测试未过仍发版"的路径。
-  # 单独跑在 ubuntu-latest（真内核 + gcc），因为 -race 需要 cgo，
-  # 且本地 Android proot 环境的 ThreadSanitizer 不可用（unsupported VMA range）。
+  # tag 上的最终测试校验：防止 tag 指向未验证提交。
+  # -race 需要 cgo + 真内核（本地 Android proot 的 ThreadSanitizer 不可用）。
   test:
     name: Test (vet / unit / race)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -104,10 +101,8 @@ jobs:
     needs: [build, test]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout tags
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -115,27 +110,11 @@ jobs:
           path: artifacts
           pattern: cline-proxy-*
 
-      - name: Generate semantic release tag
-        id: tag
-        run: |
-          set -euo pipefail
-          git fetch --tags --force
-          LATEST=$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
-          if [ -z "$LATEST" ]; then
-            TAG="v0.0.1"
-          else
-            VERSION="${LATEST#v}"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-            TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Generated semantic version: $TAG"
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           files: artifacts/cline-proxy-*/*
           generate_release_notes: true
         env:
