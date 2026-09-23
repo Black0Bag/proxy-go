@@ -71,7 +71,7 @@ CLINE_PROXY_DISPATCH=1 CLINE_PROXY_GROUP_ROUTING=1 ./cline-proxy
 
 ## 构建
 
-本地构建需要 Go 1.25+。CI（GitHub Actions）在 push 时自动执行 `go vet`、`go test`（含 `-race`），并按 tag 构建多平台二进制（linux / windows / darwin）。
+本地构建需要 Go 1.25+。CI（GitHub Actions）在每次 push 时自动执行 `go vet`、`go test`（含 `-race`），构建 6 个平台的二进制（linux / macOS / Windows × amd64 / arm64），并自动递增 patch 版本发布到 Releases。
 
 ---
 
