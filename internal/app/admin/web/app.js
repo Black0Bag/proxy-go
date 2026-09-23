@@ -43,20 +43,9 @@ function toast(msg, t, duration) {
   el._timer = setTimeout(() => el.classList.remove('show'), duration || 3500);
 }
 
-// ========== 导航 ==========
+// ========== 导航（单一入口：switchTab） ==========
 document.querySelectorAll('.nav-item').forEach(el => {
-  el.addEventListener('click', () => {
-    if (el.classList.contains('active')) return;
-    document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
-    el.classList.add('active');
-    document.querySelectorAll('.tab-panel').forEach(e => e.style.display = 'none');
-    _('tab-' + el.dataset.tab).style.display = 'block';
-    if (el.dataset.tab === 'dashboard') { loadStats(); loadAccounts(); }
-    if (el.dataset.tab === 'accounts') loadAccounts();
-    if (el.dataset.tab === 'settings') { loadKeys(); loadModels(); loadConfig(); }
-    if (el.dataset.tab === 'logs') loadLogs();
-    if (el.dataset.tab === 'opencode') { loadOcConfig(); loadOcModels(); loadOcStats(); }
-  });
+  el.addEventListener('click', () => { if (el.dataset.tab) switchTab(el.dataset.tab); });
 });
 
 function switchTab(name) {
@@ -64,12 +53,16 @@ function switchTab(name) {
     e.classList.toggle('active', e.dataset.tab === name);
   });
   document.querySelectorAll('.tab-panel').forEach(e => e.style.display = 'none');
-  _('tab-' + name).style.display = 'block';
+  const panel = _('tab-' + name);
+  if (panel) panel.style.display = 'block';
   if (name === 'dashboard') { loadStats(); loadAccounts(); }
   if (name === 'accounts') loadAccounts();
-  if (name === 'settings') { loadKeys(); loadModels(); }
+  if (name === 'settings') { loadKeys(); loadModels(); loadConfig(); }
   if (name === 'logs') loadLogs();
   if (name === 'opencode') { loadOcConfig(); loadOcModels(); loadOcStats(); }
+  if (name === 'channels') { loadChannels(); }
+  if (name === 'auto') { loadAutoConfig(); }
+  if (name === 'balance') { loadBalanceConfig(); }
 }
 
 // 导入子标签
@@ -82,12 +75,24 @@ document.querySelectorAll('#importTabs .tab').forEach(el => {
   });
 });
 
-// ========== API 请求 ==========
-async function api(method, path, body) {
+// ========== API 请求（管理员令牌：Bearer；401 时引导输入一次并重试） ==========
+const ADMIN_TOKEN_KEY = 'cline_proxy_admin_token';
+function getAdminToken() { try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch (e) { return ''; } }
+function setAdminToken(t) { try { localStorage.setItem(ADMIN_TOKEN_KEY, t); } catch (e) { /* ignore */ } }
+
+async function api(method, path, body, _retried) {
   const opts = { method, headers: {} };
+  const tok = getAdminToken();
+  if (tok) opts.headers['Authorization'] = 'Bearer ' + tok;
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(API + path, opts);
-  const data = await res.json();
+  if (res.status === 401 && !_retried) {
+    const t = (prompt('请输入管理令牌（见服务启动日志或 .admin-token 文件）') || '').trim();
+    if (t) { setAdminToken(t); return api(method, path, body, true); }
+    throw new Error('未授权：缺少管理令牌');
+  }
+  let data;
+  try { data = await res.json(); } catch (e) { throw new Error('HTTP ' + res.status); }
   if (!data.success && data.error) throw new Error(data.error);
   return data;
 }
@@ -644,3 +649,378 @@ loadConfig();
 setInterval(() => { loadStats(); }, 10000);
 setInterval(() => { loadOcStats(); }, 15000);
 setInterval(() => { if (_('tab-logs').style.display !== 'none') loadLogs(); }, 8000);
+
+// 点击模态框外部 / 按 ESC 关闭
+document.addEventListener('click', function(e) {
+  if (e.target === _('channelModal')) closeChannelModal();
+  if (e.target === _('groupModal')) closeGroupModal();
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    const cm = _('channelModal'), gm = _('groupModal');
+    if (cm && cm.style.display !== 'none') closeChannelModal();
+    if (gm && gm.style.display !== 'none') closeGroupModal();
+  }
+});
+
+// ========== M6 WP6.1: 渠道组管理面板 ==========
+let channelsCache = [];
+let groupsCache = [];
+
+// ----- Channels Panel -----
+async function loadChannels() {
+  try {
+    const d = await api('GET', '/channels');
+    const snap = d.data || {};
+    channelsCache = snap.channels || [];
+    groupsCache = snap.groups || [];
+    renderChannelsTable();
+    renderGroupsTable();
+    if (_('channelCount')) _('channelCount').textContent = channelsCache.length;
+    if (_('groupCount')) _('groupCount').textContent = groupsCache.length;
+  } catch (e) { toast('加载渠道组失败: ' + e.message, 'error'); }
+}
+
+function renderChannelsTable() {
+  const tbody = _('channelsTableBody');
+  if (!tbody) return;
+  if (!channelsCache.length) {
+    tbody.innerHTML = '<tr><td colspan=8 class="empty">暂无渠道，点击下方"添加渠道"按钮</td></tr>';
+    return;
+  }
+  tbody.innerHTML = channelsCache.map(ch => {
+    const statusClass = ch.disabled ? 'expired' : 'active';
+    const statusLabel = ch.disabled ? '已禁用' : '启用中';
+    return '<tr>' +
+      '<td>' + esc(ch.id) + '</td>' +
+      '<td><span class="model-tag">' + esc(ch.provider) + '</span></td>' +
+      '<td><span class="model-tag" style="' + (ch.disabled ? 'border:1px solid var(--border)' : 'background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.5);color:var(--accent2)') + '">' + statusLabel + '</span></td>' +
+      '<td class="mono" style="font-size:11px">' + (ch.baseURL ? esc(ch.baseURL) : '-') + '</td>' +
+      '<td>' + (ch.weight || 1) + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn btn-sm" onclick="probeChannel(\'' + esc(ch.id) + '\', this)" title="探测余额/健康"><span title="探测">🔍</span></button> ' +
+        '<button class="btn btn-sm" onclick="editChannel(\'' + esc(ch.id) + '\')" title="编辑">✎</button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteChannel(\'' + esc(ch.id) + '\')" title="删除">✕</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function probeChannel(id, btn) {
+  const ch = channelsCache.find(c => c.id === id);
+  if (!ch) { toast('渠道不存在', 'error'); return; }
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<span class="loading"></span>';
+  try {
+    const d = await api('POST', '/channels/probe', {
+      provider: ch.provider,
+      api_key: ch.apiKey || '',
+      base_url: ch.baseURL || ''
+    });
+    const bal = d.data || {};
+    let msg = '渠道 ' + esc(ch.id) + ': ';
+    if (bal.total != null) msg += '$' + parseFloat(bal.total).toFixed(2);
+    if (bal.currency) msg += ' (' + esc(bal.currency) + ')';
+    toast(msg, 'success', 5000);
+  } catch (e) {
+    toast('探测失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.innerHTML = orig;
+  }
+}
+
+async function deleteChannel(id) {
+  if (!confirm('确定删除渠道 "' + id + '"？此操作不可撤销！')) return;
+  try {
+    await api('POST', '/channels/delete', { id });
+    toast('渠道已删除', 'success');
+    loadChannels();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+function editChannel(id) {
+  const ch = channelsCache.find(c => c.id === id);
+  if (!ch) { toast('渠道不存在', 'error'); return; }
+  showChannelModal(ch);
+}
+
+function showChannelModal(ch = {}) {
+  const modal = _('channelModal');
+  if (!modal) { alert('模态框模板缺失，请检查 index.html'); return; }
+  _('chId').value = ch.id || '';
+  _('chProvider').value = ch.provider || '';
+  _('chBaseURL').value = ch.baseURL || '';
+  _('chAPIKey').value = ch.apiKey || '';
+  _('chWeight').value = ch.weight || 1;
+  _('chDisabled').checked = !!ch.disabled;
+  modal.style.display = 'flex';
+  const isNew = !ch.id;
+  _('chModalTitle').textContent = isNew ? '➕ 添加渠道' : '✎ 编辑渠道';
+  _('chSubmitBtn').textContent = isNew ? '添加' : '保存';
+}
+
+function closeChannelModal() {
+  _('channelModal').style.display = 'none';
+  _('chId').value = '';
+  _('chProvider').value = '';
+  _('chBaseURL').value = '';
+  _('chAPIKey').value = '';
+  _('chWeight').value = 1;
+  _('chDisabled').checked = false;
+}
+
+async function submitChannel() {
+  const body = {
+    id: _('chId').value.trim(),
+    provider: _('chProvider').value.trim(),
+    baseURL: _('chBaseURL').value.trim(),
+    apiKey: _('chAPIKey').value.trim(),
+    weight: parseInt(_('chWeight').value) || 1,
+    disabled: _('chDisabled').checked
+  };
+  if (!body.id || !body.provider) { toast('ID 和 Provider 必填', 'error'); return; }
+  try {
+    await api('POST', '/channels/upsert', body);
+    toast(body.id ? '渠道已更新' : '渠道已添加', 'success');
+    closeChannelModal();
+    loadChannels();
+  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+}
+
+// ----- Groups Panel -----
+function renderGroupsTable() {
+  const tbody = _('groupsTableBody');
+  if (!tbody) return;
+  if (!groupsCache.length) {
+    tbody.innerHTML = '<tr><td colspan=6 class="empty">暂无模型组，点击下方"添加组"按钮</td></tr>';
+    return;
+  }
+  tbody.innerHTML = groupsCache.map(grp => {
+    const strategyLabels = { round_robin: '轮询', weighted: '加权', least_used: '最少使用', lowest_latency: '最低延迟', auto: 'Auto' };
+    return '<tr>' +
+      '<td>' + esc(grp.name) + '</td>' +
+      '<td><span class="stat-mini">' + grp.members.length + ' 个成员</span></td>' +
+      '<td><span class="model-tag">' + (strategyLabels[grp.strategy] || grp.strategy) + '</span></td>' +
+      '<td class="mono" style="font-size:10px">' + grp.members.map(esc).join(', ') + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn btn-sm" onclick="editGroup(\'' + esc(grp.name) + '\')" title="编辑">✎</button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteGroup(\'' + esc(grp.name) + '\')" title="删除">✕</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function deleteGroup(name) {
+  if (!confirm('确定删除模型组 "' + name + '"？')) return;
+  try {
+    await api('POST', '/groups/delete', { name });
+    toast('组已删除', 'success');
+    loadChannels();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+function editGroup(name) {
+  const grp = groupsCache.find(g => g.name === name);
+  if (!grp) { toast('组不存在', 'error'); return; }
+  showGroupModal(grp);
+}
+
+function showGroupModal(grp = {}) {
+  const modal = _('groupModal');
+  if (!modal) { alert('模态框模板缺失'); return; }
+  _('grpName').value = grp.name || '';
+  _('grpMembers').value = (grp.members || []).join('\n');
+  _('grpStrategy').value = grp.strategy || 'round_robin';
+  modal.style.display = 'flex';
+  const isNew = !grp.name;
+  _('grpModalTitle').textContent = isNew ? '➕ 添加模型组' : '✎ 编辑模型组';
+  _('grpSubmitBtn').textContent = isNew ? '添加' : '保存';
+  _('grpName').disabled = !isNew; // 组名不可改
+}
+
+function closeGroupModal() {
+  _('groupModal').style.display = 'none';
+  _('grpName').value = '';
+  _('grpMembers').value = '';
+  _('grpStrategy').value = 'round_robin';
+  _('grpName').disabled = false;
+}
+
+async function submitGroup() {
+  const name = _('grpName').value.trim();
+  const members = _('grpMembers').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const strategy = _('grpStrategy').value;
+  if (!name) { toast('组名必填', 'error'); return; }
+  if (members.length === 0) { toast('至少需要一个成员', 'error'); return; }
+  const body = { name, members, strategy };
+  try {
+    await api('POST', '/groups/upsert', body);
+    toast(name ? '组已更新' : '组已添加', 'success');
+    closeGroupModal();
+    loadChannels();
+  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+}
+
+// ========== M6 WP6.2: Auto 路由面板（只读视图；启用方式=组的策略设为 auto） ==========
+async function loadAutoConfig() {
+  try {
+    const d = await api('GET', '/channels');
+    const snap = d.data || {};
+    channelsCache = snap.channels || [];
+    renderAutoCandidates();
+    renderAutoGroups(snap.groups || []);
+  } catch (e) {
+    _('autoCandidatesBody').innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function capsLabels(caps) {
+  if (!caps) return [];
+  const out = [];
+  if (caps.tier) out.push('Tier ' + caps.tier);
+  if (caps.vision) out.push('视觉');
+  if (caps.tool_call) out.push('工具调用');
+  if (caps.reasoning) out.push('推理');
+  if (caps.context_window) out.push(caps.context_window + ' ctx');
+  if (caps.cost_per_1m_in) out.push('$' + caps.cost_per_1m_in + '/1M in');
+  return out;
+}
+
+function renderAutoCandidates() {
+  const tbody = _('autoCandidatesBody');
+  if (!tbody) return;
+  if (!channelsCache.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无渠道，请先在「渠道组」添加</td></tr>';
+    return;
+  }
+  tbody.innerHTML = channelsCache.map(ch => {
+    const labels = capsLabels(ch.caps);
+    const capTxt = labels.length
+      ? labels.map(l => '<span class="model-tag">' + esc(l) + '</span>').join(' ')
+      : '<span class="probe-pill">未标注（按「能力未知但可用」处理）</span>';
+    const statusClass = ch.disabled ? 'expired' : 'active';
+    const statusTxt = ch.disabled ? '禁用' : '就绪';
+    return '<tr>' +
+      '<td>' + esc(ch.id) + '</td>' +
+      '<td><span class="model-tag">' + esc(ch.provider) + '</span></td>' +
+      '<td style="white-space:normal">' + capTxt + '</td>' +
+      '<td>' + (ch.weight || 1) + '</td>' +
+      '<td><span class="status ' + statusClass + '"><span class="status-dot ' + statusClass + '"></span>' + statusTxt + '</span></td>' +
+    '</tr>';
+  }).join('');
+}
+
+function renderAutoGroups(groups) {
+  const tbody = _('autoGroupsBody');
+  if (!tbody) return;
+  const auto = groups.filter(g => g.strategy === 'auto');
+  if (!auto.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无 auto 组——在「渠道组」中新建组并选择策略 <b>auto</b> 即可启用</td></tr>';
+    return;
+  }
+  tbody.innerHTML = auto.map(g =>
+    '<tr>' +
+      '<td>' + esc(g.name) + '</td>' +
+      '<td><span class="model-tag free">auto</span></td>' +
+      '<td class="mono" style="font-size:11px;white-space:normal">' + (g.members || []).map(esc).join(', ') + '</td>' +
+    '</tr>'
+  ).join('');
+}
+
+// ========== M6 WP6.3: 余额探测面板（按需真实探测；自动探测=浏览器本地定时器） ==========
+const balanceCache = new Map(); // channelId -> {text, at}
+let balTimerHandle = null;
+
+function fmtBalance(r) {
+  if (!r || r.total == null) return '—';
+  const cur = r.currency ? ' ' + r.currency : '';
+  return '$' + Number(r.total).toFixed(2) + cur;
+}
+
+async function loadBalanceConfig() {
+  try {
+    const d = await api('GET', '/channels');
+    const snap = d.data || {};
+    channelsCache = snap.channels || [];
+    const sel = _('balTimer');
+    if (sel) {
+      sel.value = localStorage.getItem('balance_auto_min') || '0';
+      sel.onchange = applyBalTimer;
+    }
+    applyBalTimer();
+    renderBalanceOverview();
+  } catch (e) {
+    _('balanceContent').innerHTML = '<tr><td colspan="6" class="empty">加载失败: ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function applyBalTimer() {
+  if (balTimerHandle) { clearInterval(balTimerHandle); balTimerHandle = null; }
+  const sel = _('balTimer');
+  if (!sel) return;
+  const min = parseInt(sel.value) || 0;
+  localStorage.setItem('balance_auto_min', String(min));
+  if (min > 0) {
+    balTimerHandle = setInterval(() => { runBalanceProbe(null, true); }, min * 60000);
+  }
+}
+
+function renderBalanceOverview() {
+  const tbody = _('balanceContent');
+  if (!tbody) return;
+  if (!channelsCache.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无渠道，请先在「渠道组」添加</td></tr>';
+    return;
+  }
+  tbody.innerHTML = channelsCache.map(ch => {
+    const c = balanceCache.get(ch.id);
+    const statusCls = ch.disabled ? 'expired' : 'active';
+    const statusTxt = ch.disabled ? '禁用' : '就绪';
+    return '<tr>' +
+      '<td>' + esc(ch.id) + '</td>' +
+      '<td><span class="model-tag">' + esc(ch.provider) + '</span></td>' +
+      '<td><span class="status ' + statusCls + '"><span class="status-dot ' + statusCls + '"></span>' + statusTxt + '</span></td>' +
+      '<td class="mono">' + (c ? c.text : '—') + '</td>' +
+      '<td class="mono" style="font-size:11px">' + (c ? c.at : '—') + '</td>' +
+      '<td><button class="btn btn-sm" onclick="probeOne(\'' + esc(ch.id) + '\', this)">🔍 探测</button></td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function probeOne(id, btn) {
+  const ch = channelsCache.find(c => c.id === id);
+  if (!ch) return;
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="loading"></span>'; }
+  try {
+    const d = await api('POST', '/channels/probe', { provider: ch.provider, api_key: ch.apiKey || '', base_url: ch.baseURL || '' });
+    balanceCache.set(id, { text: fmtBalance(d.data), at: new Date().toLocaleTimeString('zh-CN') });
+    toast('渠道 ' + id + ' 余额: ' + fmtBalance(d.data), 'success');
+  } catch (e) {
+    balanceCache.set(id, { text: '探测失败', at: new Date().toLocaleTimeString('zh-CN') });
+    toast('渠道 ' + id + ' 探测失败: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+    renderBalanceOverview();
+  }
+}
+
+async function runBalanceProbe(btn, silent) {
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="loading"></span>探测中'; }
+  let ok = 0, fail = 0;
+  for (const ch of channelsCache) {
+    if (ch.disabled) continue;
+    try {
+      const d = await api('POST', '/channels/probe', { provider: ch.provider, api_key: ch.apiKey || '', base_url: ch.baseURL || '' });
+      balanceCache.set(ch.id, { text: fmtBalance(d.data), at: new Date().toLocaleTimeString('zh-CN') });
+      ok++;
+    } catch (e) {
+      balanceCache.set(ch.id, { text: '探测失败', at: new Date().toLocaleTimeString('zh-CN') });
+      fail++;
+    }
+  }
+  renderBalanceOverview();
+  if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+  if (!silent) toast('探测完成：' + ok + ' 成功 / ' + fail + ' 失败', ok && !fail ? 'success' : 'info', 5000);
+}

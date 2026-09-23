@@ -12,7 +12,7 @@
 | M4 | 外挂巡检 agent（需求4） | ⚠️ 部分完成：admin REST + 审计 JSONL 就绪，agent v1/v2 待做 |
 | M5 | 门禁与工程化：文档结构门禁 + CI 测试门禁 | ✅ 完成 |
 | M5.5 | 债务清偿（2026-09-24）：CI 快检/tag 发版改造 + 全仓 gofmt + 渠道凭据加密（WP6.1/WP6.2） | ✅ 完成 |
-| M6 | WebUI 面板填充（各 M 的 UI 工作包） | ⏳ 待排 |
+| M6 | WebUI 面板填充（各 M 的 UI 工作包） | 🔵 进行中：WP6.3 管理面板重构 ✅（2026-09-24），其余 UI 待排 |
 
 ## 任务拆解
 | 任务 | 目标 | 输入 | 输出 |
@@ -21,6 +21,7 @@
 | WP5.2 CI 测试门禁 | CI 自动执行 `go vet` / `go test` / `go test -race`，且测试未过时阻断发布 | `.github/workflows/build.yml`、go.mod | 含 `test` job 的 CI 配置，`release` 依赖 `test` |
 | ~~WP6.2 gofmt 债 + CI 改造~~ ✅ 完成 | 全仓 `gofmt -l` 为空；CI 增格式门禁；发版改 tag 触发（减少 push 全量构建） | 13 个未格式化文件、`build.yml` | 格式化 commit + `ci.yml` / `release.yml` |
 | ~~WP6.1 渠道凭据加密~~ ✅ 完成 | `data/channels.json` 的 APIKey 不再明文落盘，旧数据自动迁移 | secretbox 基建、`pool.go` 迁移先例 | `channel.go` 加密快照 / 透明解密 + 3 个集成测试 |
+| ~~WP6.3 管理面板重构~~ ✅ 完成 | 修复前端 401（`api()` 统一带鉴权头 + `?token` 引导落 localStorage）+ 4 分组导航 + Auto/余额 tab + dark/light 主题 | 旧 3 个 web 文件（API 无鉴权头致全页 401、tab 瘫痪） | `index.html`/`app.js`/`style.css` 重构（1796 行）+ 真机浏览器端到端验证 |
 | ~~WP1.5-流式~~ ✅ 完成 | 流式请求也享受轮询熔断，且首字节后绝不可重试 | `dispatch.go` 的 `ErrTTFB` | `internal/app/ttfb.go`：可取消发射 + TTFB 首块边界 + `replayBody` 回放 |
 | ~~WP2.3a 基础层~~ ✅ 完成 | 能力标签 + auto 候选计算 + 按序调度（粘性/熔断语义） | Channel 无 Caps；Balancer 只能按组策略选 | `Channel.Caps`、`AutoCandidates`、`DispatchOrdered` + 16 个单测 |
 | ~~WP2.3b 转发通路~~ ✅ 完成 | `model=auto` 端到端可用 | 通用渠道转发实现 | `group_route.go`：OpenAI 兼容发射 + 组路由接线 + 账号门禁修正 + 16 个单测 + 主路径冒烟 |
@@ -206,6 +207,7 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 | WP2.3b 渠道组转发通路（组路由接入主路径） | ✅ 完成 | 见本轮 commit |
 | WP6.2 gofmt 债 + CI 快检/tag 发版改造 | ✅ 完成 | 825682e, d23c423 |
 | WP6.1 渠道凭据加密 + 明文自动迁移 | ✅ 完成 | 见本轮 commit |
+| M6 WP6.3 管理面板重构（401 鉴权修复 + 4 分组导航 + Auto/余额 tab + dark/light 主题） | ✅ 完成 | 见本轮 commit |
 
 **WP2.3b 主路径冒烟证据（真实二进制 + 假上游，3/3 符合预期）**：
 1. `CLINE_PROXY_GROUP_ROUTING=1` + `model=smoke-grp` → 假上游返回 `{"ok":true,"from":"fake-upstream"}`，代理日志出现 `group "smoke-grp": dispatch ... strategy=auto members=1` 与 `upstream ok channel=c1`；
@@ -217,6 +219,11 @@ E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落
 **WP6 验证证据（2026-09-24）**：gofmt 13 文件零逻辑改动（`gofmt -l` 为空，build/vet/test 全绿）；
 CI 拆分后 YAML 校验通过（ci.yml 快检 / release.yml tag 发版）；加密 3 集成测试
 （明文迁移 / 加密落盘往返 / 解密失败降级）通过；`.masterkey` 纳入 .gitignore 且测试完成环境隔离（实测无泄漏）。
+
+**M6 WP6.3 验证证据（2026-09-24）**：`go build ./...` / `go vet ./...` / `node --check app.js` 全通过；
+真机离屏浏览器实测（带 `?token` 引导进入）：概览/号池/渠道/扩展 4 分组切换、空态、模态框开合、
+带鉴权 API 调用返回 `API_OK total=0`（端到端修复原 401 缺陷）；dark/light 主题计算值正确
+（light 下 `bodyBg=rgb(243,245,250)`）；10 个旧残留引用 grep 全空。改动 3 个 web 文件共 1796 行。
 
 ## 遗留（下轮可继续）
 - ~~WP1.5-流式接入~~ **已于本次完成**（详见执行进度表与验收点 4）。
@@ -238,7 +245,9 @@ CI 拆分后 YAML 校验通过（ci.yml 快检 / release.yml tag 发版）；加
   旧版明文首次加载自动迁移（幂等）；回滚 = `CLINE_PROXY_PLAINTEXT=1`（逃生门）或 `git revert`。
 - WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
 - WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程
-- WebUI 渠道组/auto/余额 tab 面板填充（骨架已留 tab 位）
+- ~~WebUI 渠道组/auto/余额 tab 面板填充（骨架已留 tab 位）~~ **已于 2026-09-24 完成（WP6.3）**：
+  渠道组按组归类显示、Auto 候选/分组表、余额表 + 定时器均已落地并通过浏览器实测；
+  同轮修复前端 API 无鉴权头导致的全页 401（`api()` 统一附加 Bearer + `?token` 引导）。
 - Actions 组件大版本升级（setup-go v5→v7.0.0、checkout v4→v7.0.1、upload-artifact v4→v7.0.1）——需独立验证 breaking change
 - `internal/app` 既有 10 个文件 `gofmt` 不规范——建议单独立一个纯格式化 commit
   → ✅ **2026-09-24 已解决（WP6.2）**：实测全仓 13 文件（含 `main.go` / `internal/cline` / `internal/provider`），已整仓格式化并在 CI 增加 gofmt 门禁。
