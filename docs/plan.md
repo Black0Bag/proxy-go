@@ -10,7 +10,8 @@
 | M2 | 能力分级 + auto 路由（需求2） | ✅ 完成：规则引擎 + 能力标签 + 按序调度 + **渠道组转发通路**（`CLINE_PROXY_GROUP_ROUTING` 默认关闭） |
 | M3 | 余额探活 + 签到（需求3） | ⚠️ 部分完成：5 家探针可用，调度器 / 阈值通知 / UI 待做 |
 | M4 | 外挂巡检 agent（需求4） | ⚠️ 部分完成：admin REST + 审计 JSONL 就绪，agent v1/v2 待做 |
-| M5 | **门禁与工程化（本轮）**：文档结构门禁 + CI 测试门禁 | 🔄 本轮执行 |
+| M5 | 门禁与工程化：文档结构门禁 + CI 测试门禁 | ✅ 完成 |
+| M5.5 | 债务清偿（2026-09-24）：CI 快检/tag 发版改造 + 全仓 gofmt + 渠道凭据加密（WP6.1/WP6.2） | ✅ 完成 |
 | M6 | WebUI 面板填充（各 M 的 UI 工作包） | ⏳ 待排 |
 
 ## 任务拆解
@@ -18,6 +19,8 @@
 |---|---|---|---|
 | WP5.1 文档结构门禁 | 4 个核心文档通过 `ensure_core_docs.py` 校验且内容与事实一致 | skill 必需章节定义、仓库实测结构 | 重写后的 `goal.md` / `plan.md` / `rules.md` / `structure.md` |
 | WP5.2 CI 测试门禁 | CI 自动执行 `go vet` / `go test` / `go test -race`，且测试未过时阻断发布 | `.github/workflows/build.yml`、go.mod | 含 `test` job 的 CI 配置，`release` 依赖 `test` |
+| ~~WP6.2 gofmt 债 + CI 改造~~ ✅ 完成 | 全仓 `gofmt -l` 为空；CI 增格式门禁；发版改 tag 触发（减少 push 全量构建） | 13 个未格式化文件、`build.yml` | 格式化 commit + `ci.yml` / `release.yml` |
+| ~~WP6.1 渠道凭据加密~~ ✅ 完成 | `data/channels.json` 的 APIKey 不再明文落盘，旧数据自动迁移 | secretbox 基建、`pool.go` 迁移先例 | `channel.go` 加密快照 / 透明解密 + 3 个集成测试 |
 | ~~WP1.5-流式~~ ✅ 完成 | 流式请求也享受轮询熔断，且首字节后绝不可重试 | `dispatch.go` 的 `ErrTTFB` | `internal/app/ttfb.go`：可取消发射 + TTFB 首块边界 + `replayBody` 回放 |
 | ~~WP2.3a 基础层~~ ✅ 完成 | 能力标签 + auto 候选计算 + 按序调度（粘性/熔断语义） | Channel 无 Caps；Balancer 只能按组策略选 | `Channel.Caps`、`AutoCandidates`、`DispatchOrdered` + 16 个单测 |
 | ~~WP2.3b 转发通路~~ ✅ 完成 | `model=auto` 端到端可用 | 通用渠道转发实现 | `group_route.go`：OpenAI 兼容发射 + 组路由接线 + 账号门禁修正 + 16 个单测 + 主路径冒烟 |
@@ -201,6 +204,8 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 | WP1.5-流式（TTFB 首块边界接线） | ✅ 完成 | 3d92f18 |
 | WP2.3a auto 基础层（能力标签 + 候选计算 + 按序调度） | ✅ 完成 | 5c6a51b |
 | WP2.3b 渠道组转发通路（组路由接入主路径） | ✅ 完成 | 见本轮 commit |
+| WP6.2 gofmt 债 + CI 快检/tag 发版改造 | ✅ 完成 | 825682e, d23c423 |
+| WP6.1 渠道凭据加密 + 明文自动迁移 | ✅ 完成 | 见本轮 commit |
 
 **WP2.3b 主路径冒烟证据（真实二进制 + 假上游，3/3 符合预期）**：
 1. `CLINE_PROXY_GROUP_ROUTING=1` + `model=smoke-grp` → 假上游返回 `{"ok":true,"from":"fake-upstream"}`，代理日志出现 `group "smoke-grp": dispatch ... strategy=auto members=1` 与 `upstream ok channel=c1`；
@@ -208,6 +213,10 @@ main 现状实锤：logs.go:109 statusWriter 仅有 WriteHeader/Write，无 Flus
 3. 开关开启 + `model=other-model`（非组名）→ 仍 401，证明账号门禁仅对"命中组名"的请求精确放行。
 
 E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落盘/探针 502/优雅退出。
+
+**WP6 验证证据（2026-09-24）**：gofmt 13 文件零逻辑改动（`gofmt -l` 为空，build/vet/test 全绿）；
+CI 拆分后 YAML 校验通过（ci.yml 快检 / release.yml tag 发版）；加密 3 集成测试
+（明文迁移 / 加密落盘往返 / 解密失败降级）通过；`.masterkey` 纳入 .gitignore 且测试完成环境隔离（实测无泄漏）。
 
 ## 遗留（下轮可继续）
 - ~~WP1.5-流式接入~~ **已于本次完成**（详见执行进度表与验收点 4）。
@@ -225,8 +234,11 @@ E2E 冒烟 8/8：401 鉴权/渠道创建/组创建/列表/审计 JSONL/配置落
 - **安全债（新发现，非本轮引入）**：`data/channels.json` 中渠道 `APIKey` **明文落盘**
   （`channel.go` 的 `Save` 注释明示"含 APIKey"），与 goal.md 约束「凭据禁止明文落盘（AES-GCM）」
   不符；`secretbox.go` 目前只覆盖账号池 token。建议单独立项按 M0 加密方案处理，需提供迁移与回滚。
+  → ✅ **2026-09-24 已解决（WP6.1）**：`channel.go` Save/Load 接入 secretbox（enc:v1: AES-256-GCM），
+  旧版明文首次加载自动迁移（幂等）；回滚 = `CLINE_PROXY_PLAINTEXT=1`（逃生门）或 `git revert`。
 - WP3.2-3.4：签到调度器、阈值动作通知、admin 面板 UI
 - WP4.3-4.4：agent v1 定时巡检（可用本机定时任务零代码实现）、agent v2 独立进程
 - WebUI 渠道组/auto/余额 tab 面板填充（骨架已留 tab 位）
 - Actions 组件大版本升级（setup-go v5→v7.0.0、checkout v4→v7.0.1、upload-artifact v4→v7.0.1）——需独立验证 breaking change
 - `internal/app` 既有 10 个文件 `gofmt` 不规范——建议单独立一个纯格式化 commit
+  → ✅ **2026-09-24 已解决（WP6.2）**：实测全仓 13 文件（含 `main.go` / `internal/cline` / `internal/provider`），已整仓格式化并在 CI 增加 gofmt 门禁。

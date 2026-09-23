@@ -33,15 +33,15 @@ Cline-proxy/
 │   │   ├── types.go             #   37 行：共享类型
 │   │   ├── admin_html.go        #   24 行：内嵌入口（//go:embed 声明）
 │   │   ├── admin/web/           # 内嵌前端资源：index.html / app.js / style.css
-│   │   └── *_test.go            # 9 个测试文件，见"测试覆盖现状"
+│   │   └── *_test.go            # 13 个测试文件，见"测试覆盖现状"
 │   ├── cline/auth.go            # Cline WorkOS 认证
 │   ├── kit/http.go              # HTTP 客户端工具（共享 HTTPClient）
 │   └── provider/                # Provider 接口层
 ├── docs/                        # 核心文档（goal / plan / rules / structure）
-└── .github/workflows/build.yml  # CI：多平台构建 + 语义化发布（+ 本轮新增测试门禁）
+└── .github/workflows/           # ci.yml（push/PR 快检：gofmt+vet+test）+ release.yml（tag 触发多平台发布）
 ```
 
-**测试覆盖现状（9 个测试文件）**：`secretbox_test.go`(220) / `balancer_test.go`(181) / `dispatch_wire_test.go`(132) / `dispatch_test.go`(121) / `breaker_test.go`(106) / `auto_route_test.go`(79) / `balance_probe_test.go`(73) / `adminauth_test.go`(73) / `logs_test.go`(58)。
+**测试覆盖现状（13 个测试文件，2208 行）**：`group_route_test.go`(403) / `auto_route_wire_test.go`(334) / `ttfb_test.go`(277) / `secretbox_test.go`(220) / `balancer_test.go`(182) / `channel_crypto_test.go`(150) / `dispatch_wire_test.go`(132) / `dispatch_test.go`(121) / `breaker_test.go`(106) / `auto_route_test.go`(79) / `balance_probe_test.go`(73) / `adminauth_test.go`(73) / `logs_test.go`(58)。
 
 ## 模块划分
 - **接入层 / 协议层**（`proxy.go`、`responses.go`）：对外暴露 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 三种协议入口，负责请求解析、协议互转与响应（含 SSE 流式）写回。
@@ -78,8 +78,8 @@ Cline-proxy/
 - **Go 运行时依赖**：`github.com/refraction-networking/utls v1.8.2`（TLS 指纹）、`golang.org/x/net v0.57.0`；间接：`brotli`、`klauspost/compress`、`x/crypto`、`x/sys`、`x/text`。
 - **上游接口**：Cline API（OAuth / chat completions）、opencode zen 免费模型端点、五家余额探针端点（DeepSeek / SiliconFlow / OpenRouter / Moonshot / newapi 系）。
 - **对外接口**：`/v1/chat/completions`、Anthropic Messages、`/v1/responses`、`/v1/models`、`/admin/*` REST。
-- **配置与落盘**：账号池明文文件（首次启动自动迁移为加密）、渠道/组 JSON、统计文件、审计 JSONL。
-- **CI/发布接口**：`.github/workflows/build.yml`（多平台 matrix 构建 → 语义化打 tag → GitHub Release）。
+- **配置与落盘**：账号池与渠道凭据（均 enc:v1: AES-256-GCM 加密落盘，旧版明文首次加载自动迁移）、统计文件、审计 JSONL。
+- **CI/发布接口**：`.github/workflows/ci.yml`（push/PR：gofmt + vet + test + -race，不发版）；`.github/workflows/release.yml`（打 `v*` tag：6 平台 matrix 构建 + 测试校验 → GitHub Release）。
 - **环境开关**：`CLINE_PROXY_DISPATCH`（Dispatch 主路径灰度开关，默认关闭）。
 
 ## 关键入口文件
@@ -89,7 +89,7 @@ Cline-proxy/
 - `internal/app/pool.go`：账号池 `pickAccount` 与凭据获取，主链路的选号入口。
 - `internal/app/dispatch_wire.go`：dispatch 灰度接线点（`dispatchEnabled` / `callClineAPIViaDispatch`）。
 - `internal/app/admin_html.go` + `internal/app/admin/web/`：WebUI 入口与内嵌资源。
-- `.github/workflows/build.yml`：CI 门禁与发布流程定义。
+- `.github/workflows/ci.yml` / `release.yml`：CI 门禁与发布流程定义。
 
 ## 高风险模块
 - **`proxy.go`（2184 行）**：协议转换 + 流式转发核心，同时承担路由与主链路。改动必须限定在明确分支内，不触碰协议转换逻辑；任何"顺手重构"都可能造成三态协议回归。
@@ -97,7 +97,7 @@ Cline-proxy/
 - **`dispatch_wire.go` + `dispatch.go`（调度与灰度）**：直接决定"请求发给哪个账号"，错误会导致单渠道击穿或凭据串号。默认关闭 + 可开关回退是当前唯一安全阀。
 - **`pool.go` + `secretbox.go`（凭据）**：涉及 OAuth token 的加密、迁移与刷新；加密迁移一旦出错影响全部账号可用性，需要回滚通道。
 - **`adminauth.go`（鉴权）**：鉴权缺口等同于把账号池暴露给任意本地进程；必须 fail closed。
-- **`.github/workflows/build.yml`（发布流程）**：改动会影响发版路径（如让 release 依赖 test 后，测试失败将阻断发版），需要明确回滚方案。
+- **`.github/workflows/release.yml`（发布流程）**：改动会影响发版路径（tag 触发；release 依赖 build + test，任一失败阻断发版），需要明确回滚方案。
 
 ## 变更记录
 - 2026-09-22：按实测重写全文（补"模块划分 / 数据流·调用关系 / 依赖与外部接口 / 关键入口文件"章节，纠正行数与文件清单）。
