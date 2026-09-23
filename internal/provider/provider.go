@@ -68,8 +68,8 @@ type Provider interface {
 
 // Registry 进程内 provider 注册表（并发安全）。
 type Registry struct {
-	mu   sync.Mutex
-	m    map[string]Provider
+	mu sync.Mutex
+	m  map[string]Provider
 }
 
 // NewRegistry 创建空注册表。

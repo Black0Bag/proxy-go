@@ -1,10 +1,10 @@
 package app
 
 import (
-	"cline-go-proxy/internal/cline"
-	"cline-go-proxy/internal/kit"
 	"bufio"
 	"bytes"
+	"cline-go-proxy/internal/cline"
+	"cline-go-proxy/internal/kit"
 	"context"
 	"encoding/json"
 	"errors"

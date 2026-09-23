@@ -28,12 +28,12 @@ type probeFunc func(ctx context.Context, apiKey, baseURL string) (*provider.Bala
 
 // balanceProbes provider 名 → 探针。大小写不敏感匹配。
 var balanceProbes = map[string]probeFunc{
-	"deepseek":     probeDeepSeek,
-	"siliconflow":  probeSiliconFlow,
-	"openrouter":   probeOpenRouter,
-	"moonshot":     probeMoonshot,
-	"newapi":       probeNewAPI,
-	"one-api":      probeNewAPI,
+	"deepseek":    probeDeepSeek,
+	"siliconflow": probeSiliconFlow,
+	"openrouter":  probeOpenRouter,
+	"moonshot":    probeMoonshot,
+	"newapi":      probeNewAPI,
+	"one-api":     probeNewAPI,
 }
 
 // ProbeBalance 探测指定 provider 的余额。未知 provider 返回错误。

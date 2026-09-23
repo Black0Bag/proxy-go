@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	workosClientID       = "client_01K3A541FN8TA3EPPHTD2325AR"
-	workosDeviceAuthURL  = "https://api.workos.com/user_management/authorize/device"
+	workosClientID        = "client_01K3A541FN8TA3EPPHTD2325AR"
+	workosDeviceAuthURL   = "https://api.workos.com/user_management/authorize/device"
 	workosAuthenticateURL = "https://api.workos.com/user_management/authenticate"
-	ClineAPIBase         = "https://api.cline.bot/api/v1"
+	ClineAPIBase          = "https://api.cline.bot/api/v1"
 )
 
 type credentials struct {
@@ -93,7 +93,6 @@ func FindCredentialsFile() string {
 	pwd, _ = os.Getwd()
 	return filepath.Join(pwd, ".cline-credentials.json")
 }
-
 
 func LoadCredentials() *credentials {
 	data, err := os.ReadFile(credentialsPath)

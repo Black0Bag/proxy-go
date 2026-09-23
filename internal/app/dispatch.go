@@ -16,11 +16,11 @@ const MaxDispatchAttempts = 4
 // DispatchResult 一次调度结果。
 type DispatchResult struct {
 	Channel   *Channel
-	Status    int    // 最终 attempt 的 HTTP 状态码（成功时为上游真实状态）
-	Err       error  // 全部尝试失败时的最后错误
-	Attempts  int    // 实际尝试次数
-	Failover  bool   // 是否发生过换渠道重试
-	Retryable bool   // 建议调用方对客户端返回可重试语义（5xx/429/网络错）
+	Status    int   // 最终 attempt 的 HTTP 状态码（成功时为上游真实状态）
+	Err       error // 全部尝试失败时的最后错误
+	Attempts  int   // 实际尝试次数
+	Failover  bool  // 是否发生过换渠道重试
+	Retryable bool  // 建议调用方对客户端返回可重试语义（5xx/429/网络错）
 }
 
 // channelPicker 把「选渠道」从调度骨架中解耦：

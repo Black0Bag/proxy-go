@@ -25,8 +25,8 @@ type Channel struct {
 	Provider string            `json:"provider"` // provider.Registry 中的名字
 	APIKey   string            `json:"api_key"`
 	BaseURL  string            `json:"base_url,omitempty"`
-	Weight   int               `json:"weight"`               // weighted 策略，<=0 视为 1
-	ModelMap map[string]string `json:"model_map,omitempty"`  // 对外模型名 → 上游模型名
+	Weight   int               `json:"weight"`              // weighted 策略，<=0 视为 1
+	ModelMap map[string]string `json:"model_map,omitempty"` // 对外模型名 → 上游模型名
 	Disabled bool              `json:"disabled,omitempty"`
 	// Caps M2 WP2.1 能力标签（auto 路由用）。
 	// nil 表示未标注 → 按「能力未知但可用」处理（见 annotatedCaps），不会因此被硬过滤掉。
@@ -50,9 +50,9 @@ const (
 
 // breaker 单渠道熔断状态。
 type breaker struct {
-	fails        int       // 当前窗口连续失败数
-	openUntil    time.Time // >now 表示熔断中
-	openCount    int       // 冷却指数退避基数（探测成功归零）
+	fails     int       // 当前窗口连续失败数
+	openUntil time.Time // >now 表示熔断中
+	openCount int       // 冷却指数退避基数（探测成功归零）
 }
 
 // open 进入熔断：冷却 = base << openCount，封顶 max。
@@ -320,7 +320,7 @@ func (b *Balancer) pickRoundRobin(g *ModelGroup) *Channel {
 
 func (b *Balancer) pickWeighted(g *ModelGroup) *Channel {
 	type entry struct {
-		id    string
+		id     string
 		weight int
 	}
 	expanded := make([]entry, 0, len(g.Members))
