@@ -143,6 +143,7 @@ func TestRemoveChannelCleansGroups(t *testing.T) {
 }
 
 func TestBalancerSaveLoadRoundtrip(t *testing.T) {
+	t.Setenv(envMasterKey, hexKey('d')) // 隔离加密环境：不生成/不读取真实 .masterkey
 	dir := t.TempDir()
 	path := filepath.Join(dir, "channels.json")
 	b := mkBalancer(t)

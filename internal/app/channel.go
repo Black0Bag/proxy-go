@@ -426,19 +426,27 @@ func (b *Balancer) NoteInflight(channelID string) {
 	}
 }
 
-// balancerFile 落盘结构：仅配置，不含运行态与粘性表。
+// balancerFile 落盘结构：仅配置，不含运行态与粘性表；渠道 APIKey 落盘时为 enc:v1: 密文。
 type balancerFile struct {
 	Channels []Channel    `json:"channels"`
 	Groups   []ModelGroup `json:"groups"`
 }
 
-// Save 配置落盘（0600，含 APIKey）。
+// Save 配置落盘（0600）；敏感字段（APIKey）经 sealSecret 加密后写入。
 func (b *Balancer) Save(path string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.saveLocked(path)
+}
+
+// saveLocked 落盘核心（需持有 b.mu）：通过值拷贝生成快照并加密敏感字段，
+// 不改动内存中的明文运行时状态。
+func (b *Balancer) saveLocked(path string) error {
 	f := balancerFile{}
 	for _, id := range slices.Sorted(maps.Keys(b.channels)) {
-		f.Channels = append(f.Channels, *b.channels[id])
+		cp := *b.channels[id]
+		cp.APIKey = sealSecret(cp.APIKey)
+		f.Channels = append(f.Channels, cp)
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.groups)) {
 		f.Groups = append(f.Groups, *b.groups[name])
@@ -450,7 +458,8 @@ func (b *Balancer) Save(path string) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-// Load 从文件恢复配置（运行态清零）。
+// Load 从文件恢复配置（运行态清零）；敏感字段透明解密，
+// 检测到旧版明文凭据时自动回写一次（明文→密文迁移，幂等）。
 func (b *Balancer) Load(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -462,6 +471,25 @@ func (b *Balancer) Load(path string) error {
 	var f balancerFile
 	if err := json.Unmarshal(data, &f); err != nil {
 		return fmt.Errorf("unmarshal balancer: %w", err)
+	}
+	// 敏感字段透明解密：APIKey 落盘为 enc:v1: 密文，内存保持明文。
+	// 单字段解密失败仅置空该字段并告警，不让整个配置加载失败、不 panic。
+	needsMigration := false
+	for i := range f.Channels {
+		c := &f.Channels[i]
+		if c.APIKey == "" {
+			continue
+		}
+		plain, err := openSecret(c.APIKey)
+		if err != nil {
+			log.Printf("balancer: channel %s api key decrypt failed, field cleared: %v", c.ID, err)
+			c.APIKey = ""
+			continue
+		}
+		if !isEncryptedSecret(c.APIKey) {
+			needsMigration = true // 旧版明文凭据
+		}
+		c.APIKey = plain
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -475,6 +503,13 @@ func (b *Balancer) Load(path string) error {
 	for _, g := range f.Groups {
 		cp := g
 		b.groups[g.Name] = &cp
+	}
+	// 检测到旧版明文凭据：立即回写一次，完成明文→密文迁移。
+	if needsMigration {
+		log.Printf("balancer: plaintext credentials detected, migrating to encrypted storage")
+		if err := b.saveLocked(path); err != nil {
+			log.Printf("balancer: migration save failed (in-memory state unaffected): %v", err)
+		}
 	}
 	return nil
 }

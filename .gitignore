@@ -13,6 +13,7 @@ cline-proxy-*
 # Local data
 .cline-accounts.json
 .cline-credentials.json
+.masterkey
 .zen-config.json
 zen-stats.jsonl
 cline-proxy.log

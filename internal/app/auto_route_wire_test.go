@@ -123,6 +123,7 @@ func TestAutoCandidatesNoMatch(t *testing.T) {
 
 // TestChannelCapsPersistence Caps 随渠道落盘并原样读回；未标注保持 nil（omitempty）。
 func TestChannelCapsPersistence(t *testing.T) {
+	t.Setenv(envMasterKey, hexKey('e')) // 隔离加密环境：不生成/不读取真实 .masterkey
 	path := filepath.Join(t.TempDir(), "channels.json")
 	b := NewBalancer()
 	b.UpsertChannel(Channel{ID: "x", Name: "X", Provider: "deepseek", APIKey: "k",
